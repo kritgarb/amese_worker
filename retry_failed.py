@@ -1,5 +1,5 @@
 """
-Reprocessa eventos que falharam (arquivos JSON) gerados por monitor_bemsoft.py.
+Reprocessa eventos que falharam (arquivos JSON) gerados por main.py.
 
 Por padrão lê JSONs em FAILED_DIR (do .env ou default do monitor) e chama
 send_to_bemsoft(event). Pode operar em modo dry-run (não envia) ou enviar de
@@ -11,20 +11,24 @@ import glob
 import json
 import os
 import shutil
+import sys
+from pathlib import Path
 from typing import Iterable, List
 
 from dotenv import load_dotenv
 
 # Carrega .env da raiz do projeto
-BASE_DIR = os.path.dirname(__file__)
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-load_dotenv(ENV_PATH, override=True)
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
-# Importa funções do monitor
-from monitor_bemsoft import (
-    FAILED_DIR as DEFAULT_FAILED_DIR,
-    send_to_bemsoft,
-)
+SRC_DIR = BASE_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import config
+from bemsoft_api import send_to_bemsoft
+
+DEFAULT_FAILED_DIR = config.FAILED_DIR
 
 
 def collect_files(directory: str, files: List[str]) -> List[str]:
@@ -140,4 +144,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

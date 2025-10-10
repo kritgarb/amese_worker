@@ -6,7 +6,7 @@ if exist .venv\Scripts\activate.bat (
   call .venv\Scripts\activate.bat
 )
 
-python monitor_bemsoft.py
+set PYTHONPATH=%~dp0\..\src
+python %~dp0\..\main.py
 
 endlocal
-

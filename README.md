@@ -38,8 +38,9 @@ Todas as variáveis são lidas de um arquivo `.env` na raiz. Principais chaves:
 
 - Leitura/execução
   - `POLL_SECONDS`: intervalo de polling (segundos)
-  - `DEBOUNCE_SECONDS`: atraso para evitar capturar solicitações incompletas (0 desliga)
-  - `TERCEIRO`: filtro em `ItemSol.NomeTerceirizado`
+  - `DEBOUNCE_SECONDS`: atraso (em segundos) antes do envio; ex.: `300` = espera 5 minutos (0 desliga)
+  - `TERCEIROS`: lista separada por vírgula com os nomes em `ItemSol.NomeTerceirizado` (ex.: `DIAGNÓSTICO DO BRASIL - DB,AME-SE - PARDINI`)
+  - `TERCEIRO`: opção legada (um único nome); se definido, será usado como fallback
   - `FAILED_DIR`: pasta onde salvar falhas (padrão `completo/failed_events`)
 
 - Bemsoft
@@ -76,8 +77,8 @@ DB_PASS=senha
 ODBC_DRIVER=ODBC Driver 18 for SQL Server
 
 POLL_SECONDS=5
-DEBOUNCE_SECONDS=0
-TERCEIRO=DIAGNÓSTICO DO BRASIL - DB
+DEBOUNCE_SECONDS=300
+TERCEIROS=DIAGNÓSTICO DO BRASIL - DB,AME-SE - PARDINI,AME-SE LABORATORIO
 
 BEMSOFT_BASE_URL=https://bemsoft.ws.wiselab.com.br
 BEMSOFT_ENDPOINT=/requests
@@ -121,7 +122,7 @@ pip install -r requirements.txt
 4) Execute o monitor:
 
 ```
-python monitor_bemsoft.py
+python main.py
 ```
 
 Mensagens de log no console mostram o evento agrupado por solicitação e o resultado do envio. Com `BEMSOFT_DRY_RUN=1`, apenas imprime o payload gerado (sem enviar).
@@ -168,6 +169,7 @@ Atalhos (scripts):
 
 - Checkpoint incremental: tabela `dbo._MonitorState` é criada automaticamente (se não existir) e armazena `LastItemId`. O monitor lê sempre itens com `CodItemSol > LastItemId`.
 - Agrupamento por solicitação: todas as linhas com o mesmo `CodSolicitacao` são agregadas em um único payload de pedido.
+- Janela de debounce: cada solicitação detectada entra em uma fila in-memory e só é enviada após `DEBOUNCE_SECONDS` segundos (logs `[debounce]` indicam o tempo restante e a quantidade na fila).
 - Datas/horários: prioriza `solicitacao.dtaentrada` + `Hora`; se não disponíveis, tenta `ItemSol.DataEntrada`; por fim usa o horário atual (fuso −03:00).
 - Paciente: gera `externalId` estável com base em `codpaciente` ou CPF; exige `birthDate` e `gender` (ou usa os defaults do `.env`).
 - Exames (tests):
@@ -186,7 +188,7 @@ Para reenviar um evento salvo em `FAILED_DIR`, você pode usar um REPL Python:
 ```
 python
 >>> import json
->>> from monitor_bemsoft import send_to_bemsoft
+>>> from bemsoft_api import send_to_bemsoft
 >>> data = json.load(open('completo/failed_events/20240101T120000Z_123.json', encoding='utf-8'))
 >>> send_to_bemsoft(data['event'])
 ```
@@ -202,7 +204,7 @@ Garanta `BEMSOFT_DRY_RUN=0` e `BEMSOFT_TOKEN` válidos para que o envio ocorra.
 
 ## Estrutura do projeto
 
-- `monitor_bemsoft.py`: script principal (poll, transformação, envio, retries, falhas).
+- `main.py`: script principal (poll, transformação, envio, retries, falhas).
 - `retry_failed.py`: utilitário CLI para reprocessar eventos com falha.
 - `.env`: configurações locais (não commitar segredos reais em repositórios públicos).
 - `completo/failed_events/`: diretório (criado automaticamente) para eventos que falharam.
@@ -215,7 +217,7 @@ Garanta `BEMSOFT_DRY_RUN=0` e `BEMSOFT_TOKEN` válidos para que o envio ocorra.
 2. Execute:
 
 ```
-nssm install BemsoftMonitor "C:\\Path\\to\\python.exe" "C:\\Path\\to\\project\\monitor_bemsoft.py"
+nssm install BemsoftMonitor "C:\\Path\\to\\python.exe" "C:\\Path\\to\\project\\main.py"
 ```
 
 3. Em “Startup directory”, aponte para a pasta do projeto. Garanta que o `.env` esteja na raiz do projeto e acessível pelo serviço.
@@ -235,7 +237,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/bemsoft-monitor
-ExecStart=/usr/bin/python3 /opt/bemsoft-monitor/monitor_bemsoft.py
+ExecStart=/usr/bin/python3 /opt/bemsoft-monitor/main.py
 Restart=on-failure
 Environment=PYTHONUNBUFFERED=1
 
