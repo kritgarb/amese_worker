@@ -2,6 +2,8 @@
 
 Integração que lê itens de exames de um banco SQL Server, agrupa por solicitação e envia pedidos para a API da Bemsoft (`POST /requests`). Roda em loop (daemon/worker), com checkpoint incremental, retries, idempotência e persistência de falhas para reprocessamento.
 
+Documentação BemSoft: https://bemsoft.ws.wiselab.com.br/swagger
+
 
 ## Visão geral (o que faz hoje)
 
