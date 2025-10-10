@@ -295,7 +295,17 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
         raise ValueError("birthDate obrigatório e não encontrado (defina DEFAULT_BIRTHDATE no .env).")
 
     # gender
-    gender = (paciente.get("sexo") or paciente.get("PacienteSexo") or "").strip().upper() or (DEFAULT_GENDER or "")
+    gender_raw = (paciente.get("sexo") or paciente.get("PacienteSexo") or "").strip().upper()
+    if gender_raw == "MASCULINO":
+        gender = "M"
+    elif gender_raw == "FEMININO":
+        gender = "F"
+    else:
+        gender = gender_raw
+
+    if gender not in {"M", "F"}:
+        gender = (DEFAULT_GENDER or "").strip().upper()
+
     if gender not in {"M", "F"}:
         raise ValueError("gender obrigatório ausente/ inválido (defina paciente.sexo ou DEFAULT_GENDER='M'|'F' no .env).")
 
@@ -327,7 +337,7 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
         if DRY_RUN:
             specimen_id = "SPECIMEN-TEST"
         else:
-            specimen_id = tests_index.specimen_for(sess, support_test_id)  # type: ignore
+            specimen_id = tests_index.specimen_for(sess, support_test_id)
             if not specimen_id:
                 raise ValueError(
                     f"supportSpecimenId ausente para supportTestId='{support_test_id}'. "
