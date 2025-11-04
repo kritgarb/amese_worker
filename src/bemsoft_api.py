@@ -217,11 +217,12 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             "additionalInformations": [
                 {"key": "origem", "value": it.get("Origem") or "API"},
                 {"key": "descricao", "value": it.get("DescExames") or ""},
+                {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
             ],
-            "condition": None,
-            "preservative": None,
-            "diuresisVolume": None,
-            "diuresisTime": None,
+            "condition": "",
+            "preservative": "",
+            "diuresisVolume": 0,
+            "diuresisTime": 0,
         })
 
     payload = {
@@ -233,15 +234,15 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
                 "externalId": order_id,
                 "date": bdate,
                 "time": btime,
-                "patientHeight": None,
-                "patientWeight": None,
+                "patientHeight": 0,
+                "patientWeight": 0,
                 "patient": {
                     "externalId": pat_ext,
                     "name": paciente.get("nome") or "NOME_NAO_INFORMADO",
                     "birthDate": birth_date,
                     "gender": gender,
-                    "weight": None,
-                    "height": None,
+                    "weight": 0,
+                    "height": 0,
                 },
                 "physician": physician,
                 "tests": tests,

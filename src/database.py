@@ -56,10 +56,13 @@ SELECT TOP (500)
 
     p.nome AS PacienteNome, p.cpf AS PacienteCPF, p.datanasc AS PacienteNascimento,
     p.fone AS PacienteFone, p.EmailPac AS PacienteEmail, p.cidade AS PacienteCidade, p.uf AS PacienteUF,
-    p.sexo AS PacienteSexo
+    p.sexo AS PacienteSexo,
+
+    te.descricao AS ExameDescricao
 FROM dbo.ItemSol i
 JOIN dbo.solicitacao s ON s.codsolicitacao = i.CodSolicitacao
 LEFT JOIN dbo.paciente p ON p.codpaciente = s.codpaciente
+LEFT JOIN dbo.texame te ON te.CodigoExame = i.CodConvExames
 WHERE
     i.CodItemSol > :last
 {terceiro_clause}

@@ -60,6 +60,7 @@ def row_to_item(r: Dict[str, Any]) -> Dict[str, Any]:
         "VlTerceirizado": _normalize_value(r["VlTerceirizado"]),
         "SituacaoResultado": _normalize_value(r["SituacaoResultado"]),
         "Origem": _normalize_value(r["Origem"]),
+        "ExameDescricao": _normalize_value(r.get("ExameDescricao")),
     }
 
 
