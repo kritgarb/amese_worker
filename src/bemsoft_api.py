@@ -254,8 +254,11 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
 def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None) -> Dict[str, Any]:
     """Transforma e envia POST /requests (ou apenas gera no DRY_RUN)."""
     if config.DRY_RUN:
+        payload_start = datetime.now()
         payload = build_payload(event, session=None)
-        print("[bemsoft] DRY_RUN ativo. Payload gerado, não enviado.")
+        payload_end = datetime.now()
+        payload_duration = (payload_end - payload_start).total_seconds()
+        print(f"[{payload_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] DRY_RUN ativo. Payload gerado em {payload_duration:.2f}s, não enviado.")
         return {"ok": True, "status": 200, "data": {"dryRun": True, "payload": payload}}
 
     if not config.TOKEN:
@@ -268,9 +271,19 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None) ->
         "Idempotency-Key": _idemp_key(event.get("solicitacao", {}).get("codsolicitacao")),
     }
     url = config.BASE_URL.rstrip("/") + config.REQS_ENDPOINT
-    payload = build_payload(event, session=sess)
 
+    payload_start = datetime.now()
+    payload = build_payload(event, session=sess)
+    payload_end = datetime.now()
+    payload_duration = (payload_end - payload_start).total_seconds()
+    print(f"[{payload_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] Payload construído em {payload_duration:.2f}s")
+
+    request_start = datetime.now()
     resp = sess.post(url, json=payload, headers=headers, timeout=config.TIMEOUT)
+    request_end = datetime.now()
+    request_duration = (request_end - request_start).total_seconds()
+    print(f"[{request_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] Request HTTP concluído em {request_duration:.2f}s")
+
     status = resp.status_code
     try:
         body = resp.json() if resp.content else None

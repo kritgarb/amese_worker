@@ -54,7 +54,7 @@ def row_to_item(r: Dict[str, Any]) -> Dict[str, Any]:
         "CodItemSol": _normalize_value(r["CodItemSol"]),
         "DataEntrada": _normalize_value(r["DataEntrada"]),
         "DescExames": _normalize_value(r["DescExames"]),
-        "CodigoExame": _normalize_value(r["CodConvExames"]),
+        "CodigoExame": _normalize_value(r.get("CodigoExame") or r.get("CodConvExames")),
         "NomeTerceirizado": _normalize_value(r["NomeTerceirizado"]),
         "Valor": _normalize_value(r["Valor"]),
         "VlTerceirizado": _normalize_value(r["VlTerceirizado"]),
@@ -91,11 +91,21 @@ def build_group_event(head_row: Dict[str, Any], items: List[Dict[str, Any]]) -> 
 
 def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
     """Lê last_id, busca novos itens, debounce, agrupa por solicitação e envia 1 payload por grupo."""
+    poll_start = datetime.now()
+    print(f"[{poll_start.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando ciclo de monitoramento...")
+
     with database.ENGINE.begin() as conn:
+        query_start = datetime.now()
         last = conn.execute(database.SQL_GET_LAST).scalar() or 0
         rows = database.fetch_items(conn, last, config.TERCEIROS)
+        query_end = datetime.now()
+        query_duration = (query_end - query_start).total_seconds()
+
         if not rows:
+            print(f"[{query_end.strftime('%Y-%m-%d %H:%M:%S')}] Nenhum novo item encontrado (query: {query_duration:.2f}s)")
             return last
+
+        print(f"[{query_end.strftime('%Y-%m-%d %H:%M:%S')}] Encontrados {len(rows)} itens em {query_duration:.2f}s")
 
         # Agrupa por solicitação
         groups: Dict[Any, Dict[str, Any]] = {}
@@ -145,24 +155,40 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
                 f"\n== SOLICITAÇÃO {cod} | itens={len(g['items'])} ==\n"
                 f"{json.dumps(event, ensure_ascii=False, indent=2, default=_json_default)}\n"
             )
+            send_start = datetime.now()
+            print(f"[{send_start.strftime('%Y-%m-%d %H:%M:%S')}] Enviando solicitação {cod}...")
+
             try:
                 result = bemsoft_api.send_to_bemsoft(event, session=sess_http)
+                send_end = datetime.now()
+                send_duration = (send_end - send_start).total_seconds()
+
                 ok = result.get("ok")
                 status = result.get("status")
                 if ok:
-                    print(f"[bemsoft] entregue com sucesso (status={status}).")
+                    print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] entregue com sucesso (status={status}, tempo: {send_duration:.2f}s).")
                 else:
-                    print(f"[bemsoft] erro (status={status}): {result.get('error')}")
+                    print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] erro (status={status}, tempo: {send_duration:.2f}s): {result.get('error')}")
                     persist_failed(event, reason=f"HTTP {status}: {result.get('error')}")
             except Exception as e:
-                print(f"[bemsoft] exceção ao enviar: {e}")
+                send_end = datetime.now()
+                send_duration = (send_end - send_start).total_seconds()
+                print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] exceção ao enviar (tempo: {send_duration:.2f}s): {e}")
                 persist_failed(event, reason=str(e))
 
             group_max = max(i["CodItemSol"] for i in g["items"])
             new_last = max(new_last, group_max)
             PENDING_SOLICITACOES.pop(cod, None)
 
+        update_start = datetime.now()
         conn.execute(database.SQL_SET_LAST, {"last": new_last})
+        update_end = datetime.now()
+        print(f"[{update_end.strftime('%Y-%m-%d %H:%M:%S')}] Estado atualizado para last_id={new_last}")
+
+        poll_end = datetime.now()
+        poll_duration = (poll_end - poll_start).total_seconds()
+        print(f"[{poll_end.strftime('%Y-%m-%d %H:%M:%S')}] Ciclo concluído em {poll_duration:.2f}s\n")
+
         return new_last
 
 

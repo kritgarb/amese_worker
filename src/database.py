@@ -58,6 +58,7 @@ SELECT TOP (500)
     p.fone AS PacienteFone, p.EmailPac AS PacienteEmail, p.cidade AS PacienteCidade, p.uf AS PacienteUF,
     p.sexo AS PacienteSexo,
 
+    te.codigoexame AS CodigoExame,
     te.descricao AS ExameDescricao
 FROM dbo.ItemSol i
 JOIN dbo.solicitacao s ON s.codsolicitacao = i.CodSolicitacao
