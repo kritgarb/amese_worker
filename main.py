@@ -151,15 +151,11 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
         new_last = last
         for cod, g in ready_groups:
             event = build_group_event(g["head"], g["items"])
-            print(
-                f"\n== SOLICITAÇÃO {cod} | itens={len(g['items'])} ==\n"
-                f"{json.dumps(event, ensure_ascii=False, indent=2, default=_json_default)}\n"
-            )
             send_start = datetime.now()
-            print(f"[{send_start.strftime('%Y-%m-%d %H:%M:%S')}] Enviando solicitação {cod}...")
+            print(f"[{send_start.strftime('%Y-%m-%d %H:%M:%S')}] Enviando solicitação {cod} com {len(g['items'])} item(ns)...")
 
             try:
-                result = bemsoft_api.send_to_bemsoft(event, session=sess_http)
+                result = bemsoft_api.send_to_bemsoft(event, session=sess_http, print_payload=True)
                 send_end = datetime.now()
                 send_duration = (send_end - send_start).total_seconds()
 
