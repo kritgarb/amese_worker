@@ -3,11 +3,9 @@ from sqlalchemy.pool import QueuePool
 from urllib.parse import quote_plus
 
 import config
-
-# Conexão robusta com instância nomeada via odbc_connect
 raw_odbc = (
     f"DRIVER={config.DRIVER};"
-    f"SERVER={config.SERVER};"                  # ex: localhost\SQLEXPRESS
+    f"SERVER={config.SERVER};"                 
     f"DATABASE={config.DB};"
     f"UID={config.USER};PWD={config.PWD};"
     "Encrypt=yes;TrustServerCertificate=yes"
@@ -58,12 +56,12 @@ SELECT TOP (500)
     p.fone AS PacienteFone, p.EmailPac AS PacienteEmail, p.cidade AS PacienteCidade, p.uf AS PacienteUF,
     p.sexo AS PacienteSexo,
 
-    te.codigoexame AS CodigoExame,
+    te.CodigoExame AS CodigoExame,
     te.descricao AS ExameDescricao
 FROM dbo.ItemSol i
 JOIN dbo.solicitacao s ON s.codsolicitacao = i.CodSolicitacao
 LEFT JOIN dbo.paciente p ON p.codpaciente = s.codpaciente
-LEFT JOIN dbo.texame te ON te.CodigoExame = i.CodConvExames
+LEFT JOIN dbo.texame te ON te.CodTexame = i.CodTExame
 WHERE
     i.CodItemSol > :last
 {terceiro_clause}

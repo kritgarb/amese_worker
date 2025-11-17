@@ -40,7 +40,7 @@ def _json_default(value: Any) -> Any:
 
 
 def persist_failed(event: Dict[str, Any], reason: str = ""):
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     key = event.get("solicitacao", {}).get("codsolicitacao", "unknown")
     path = os.path.join(config.FAILED_DIR, f"{ts}_{key}.json")
     data = {"reason": reason, "event": event}
@@ -50,11 +50,16 @@ def persist_failed(event: Dict[str, Any], reason: str = ""):
 
 
 def row_to_item(r: Dict[str, Any]) -> Dict[str, Any]:
+    codigo_exame = r.get("CodigoExame")
+    # Se CodigoExame for NULL ou vazio, usa "XXXX"
+    if not codigo_exame or str(codigo_exame).strip() == "":
+        codigo_exame = "XXXX"
+
     return {
         "CodItemSol": _normalize_value(r["CodItemSol"]),
         "DataEntrada": _normalize_value(r["DataEntrada"]),
         "DescExames": _normalize_value(r["DescExames"]),
-        "CodigoExame": _normalize_value(r.get("CodigoExame") or r.get("CodConvExames")),
+        "CodigoExame": _normalize_value(codigo_exame),
         "NomeTerceirizado": _normalize_value(r["NomeTerceirizado"]),
         "Valor": _normalize_value(r["Valor"]),
         "VlTerceirizado": _normalize_value(r["VlTerceirizado"]),
@@ -92,7 +97,6 @@ def build_group_event(head_row: Dict[str, Any], items: List[Dict[str, Any]]) -> 
 def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
     """Lê last_id, busca novos itens, debounce, agrupa por solicitação e envia 1 payload por grupo."""
     poll_start = datetime.now()
-    print(f"[{poll_start.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando ciclo de monitoramento...")
 
     with database.ENGINE.begin() as conn:
         query_start = datetime.now()
@@ -102,7 +106,6 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
         query_duration = (query_end - query_start).total_seconds()
 
         if not rows:
-            print(f"[{query_end.strftime('%Y-%m-%d %H:%M:%S')}] Nenhum novo item encontrado (query: {query_duration:.2f}s)")
             return last
 
         print(f"[{query_end.strftime('%Y-%m-%d %H:%M:%S')}] Encontrados {len(rows)} itens em {query_duration:.2f}s")

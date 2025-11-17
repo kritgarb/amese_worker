@@ -297,8 +297,35 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, pr
     except Exception:
         body = resp.text
 
+    # Log detalhado da resposta da API
+    import json as json_log
+    print(f"\n== RESPOSTA DA API BEMSOFT ==")
+    print(f"Status Code: {status}")
+    print(f"Headers: {dict(resp.headers)}")
+    if isinstance(body, dict) or isinstance(body, list):
+        print(f"Body (JSON):\n{json_log.dumps(body, ensure_ascii=False, indent=2)}")
+    else:
+        print(f"Body (Text): {body}")
+    print(f"==========================\n")
+
+    # 201: Sucesso na criação do request
+    if status == 201:
+        return {"ok": True, "status": status, "data": body}
+
+    # 409: Idempotência (request já foi processado anteriormente)
+    if status == 409:
+        return {"ok": True, "status": status, "data": body, "idempotent": True}
+
+    # 400: Erro de validação
+    if status == 400:
+        return {"ok": False, "status": status, "error": body, "validation_error": True}
+
+    # 401: Token ausente ou inválido
+    if status == 401:
+        return {"ok": False, "status": status, "error": body, "auth_error": True}
+
+    # Outros status codes
     if 200 <= status < 300:
         return {"ok": True, "status": status, "data": body}
-    if status == 409:  # idempotência
-        return {"ok": True, "status": status, "data": body, "idempotent": True}
+
     return {"ok": False, "status": status, "error": body}
