@@ -174,10 +174,10 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
     if gender not in {"M", "F"}:
         raise ValueError("gender obrigatório ausente/ inválido (defina paciente.sexo ou DEFAULT_GENDER='M'|'F' no .env).")
 
-    # physician opcional
-    physician = None
+    # physician opcional - se não tiver dados completos, não inclui no payload
+    physician_data = None
     if config.PHYSICIAN_NAME and config.PHYSICIAN_COUNC and config.PHYSICIAN_NUM and config.PHYSICIAN_UF:
-        physician = {
+        physician_data = {
             "externalId": config.PHYSICIAN_NUM,
             "name": config.PHYSICIAN_NAME,
             "councilAbbreviation": config.PHYSICIAN_COUNC,
@@ -216,16 +216,11 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
         ]
 
-        # Busca DESCMAT no Google Sheets (se configurado)
+        # Busca DESCMAT no Google Sheets (se configurado) e adiciona sempre que disponível
         descmat = sheets_client.get_descmat_for_test(support_test_id)
-
-        # Se specimen_id estiver vazio e DESCMAT foi encontrado, adiciona às informações adicionais
-        if not specimen_id or specimen_id.strip() == "":
-            if descmat:
-                additional_info.append({"key": "DESCMAT", "value": descmat})
-                print(f"[sheets] DESCMAT '{descmat}' encontrado para test_id '{support_test_id}'")
-            else:
-                print(f"[sheets] Aviso: DESCMAT não encontrado para test_id '{support_test_id}' (specimen_id vazio)")
+        if descmat:
+            additional_info.append({"key": "DESCMAT", "value": descmat})
+            print(f"[sheets] DESCMAT '{descmat}' encontrado para test_id '{support_test_id}'")
 
         tests.append({
             "externalId": item_ext,
@@ -240,28 +235,34 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             "diuresisTime": 0,
         })
 
+    # Monta o order sem physician se não estiver disponível
+    order_data = {
+        "externalId": order_id,
+        "date": bdate,
+        "time": btime,
+        "patientHeight": 0,
+        "patientWeight": 0,
+        "patient": {
+            "externalId": pat_ext,
+            "name": paciente.get("nome") or "NOME_NAO_INFORMADO",
+            "birthDate": birth_date,
+            "gender": gender,
+            "weight": 0,
+            "height": 0,
+        },
+        "tests": tests,
+    }
+
+    # Adiciona physician apenas se houver dados completos
+    if physician_data:
+        order_data["physician"] = physician_data
+
     payload = {
         "batch": {
             "externalId": batch_id,
             "date": bdate,
             "time": btime,
-            "order": {
-                "externalId": order_id,
-                "date": bdate,
-                "time": btime,
-                "patientHeight": 0,
-                "patientWeight": 0,
-                "patient": {
-                    "externalId": pat_ext,
-                    "name": paciente.get("nome") or "NOME_NAO_INFORMADO",
-                    "birthDate": birth_date,
-                    "gender": gender,
-                    "weight": 0,
-                    "height": 0,
-                },
-                "physician": physician,
-                "tests": tests,
-            }
+            "order": order_data
         }
     }
     return payload
