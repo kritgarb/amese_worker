@@ -216,11 +216,19 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
         ]
 
-        # Busca DESCMAT no Google Sheets (se configurado) e adiciona sempre que disponível
-        descmat = sheets_client.get_descmat_for_test(support_test_id)
-        if descmat:
-            additional_info.append({"key": "DESCMAT", "value": descmat})
-            print(f"[sheets] DESCMAT '{descmat}' encontrado para test_id '{support_test_id}'")
+        # Busca informações do Google Sheets (se configurado) e adiciona quando disponível
+        test_info = sheets_client.get_test_info(support_test_id)
+        if test_info:
+            test_name = test_info.get("TEST_NAME")
+            descmat = test_info.get("SUPPORT_LAB_DESCMAT")
+
+            if test_name:
+                additional_info.append({"key": "SUPPORT_TEST_NAME", "value": test_name})
+
+            if descmat:
+                additional_info.append({"key": "DESCMAT", "value": descmat})
+
+            print(f"[sheets] Dados encontrados para '{support_test_id}': TEST_NAME='{test_name}', DESCMAT='{descmat}'")
 
         tests.append({
             "externalId": item_ext,
