@@ -22,7 +22,9 @@ DRIVER = os.getenv("ODBC_DRIVER", "ODBC Driver 18 for SQL Server")
 
 POLL_SECONDS     = int(os.getenv("POLL_SECONDS", "5"))
 DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "0"))  # 0 desliga
-FAILED_DIR       = os.getenv("FAILED_DIR", "completo/failed_events")
+# Usa caminho absoluto para FAILED_DIR (importante para rodar como serviço Windows)
+_FAILED_DIR_DEFAULT = str(ROOT_DIR / "completo" / "failed_events")
+FAILED_DIR       = os.getenv("FAILED_DIR", _FAILED_DIR_DEFAULT)
 
 _TERCEIROS_RAW = os.getenv("TERCEIROS")
 if _TERCEIROS_RAW:

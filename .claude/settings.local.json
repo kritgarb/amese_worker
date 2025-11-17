@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python main.py:*)"
+      "Bash(python main.py:*)",
+      "Bash(git rm:*)",
+      "Bash(move instalar_servico_v2.bat instalar_servico.bat)"
     ],
     "deny": [],
     "ask": []
