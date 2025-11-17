@@ -70,7 +70,8 @@ class TestsIndex:
             hint_lower = descmat_hint.lower()
             for variant in variants:
                 specimen_name = (variant.get("specimen_name") or "").lower()
-                if specimen_name and specimen_name in hint_lower:
+                # Verifica se o nome do specimen aparece no DESCMAT OU vice-versa
+                if specimen_name and (specimen_name in hint_lower or hint_lower in specimen_name):
                     print(f"[tests] Match encontrado para '{support_test_id}': specimen '{specimen_name}' matches DESCMAT '{descmat_hint}'")
                     return variant.get("specimen_id")
 
@@ -239,11 +240,14 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
         test_info = sheets_client.get_test_info(support_test_id)
         descmat = test_info.get("SUPPORT_LAB_DESCMAT") if test_info else None
 
+        print(f"[debug] support_test_id='{support_test_id}', test_info={test_info}, descmat='{descmat}'")
+
         if config.DRY_RUN:
             specimen_id = "SPECIMEN-TEST"
         else:
             # Passa descmat como hint para resolver ambiguidade de múltiplas variantes
             specimen_id = tests_index.specimen_for(sess, support_test_id, descmat_hint=descmat)
+            print(f"[debug] specimen_id retornado: '{specimen_id}'")
             if not specimen_id:
                 raise ValueError(
                     f"supportSpecimenId ausente para supportTestId='{support_test_id}'. "
