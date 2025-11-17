@@ -10,6 +10,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import config
+import sheets_client
 
 # ===== Cache de /tests =====
 class TestsIndex:
@@ -208,17 +209,31 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
                     f"Ajuste o mapping (BEMSOFT_TEST_MAP_PATH) ou o catálogo /tests."
                 )
 
+        # Monta additionalInformations base
+        additional_info = [
+            {"key": "origem", "value": it.get("Origem") or "API"},
+            {"key": "descricao", "value": it.get("DescExames") or ""},
+            {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
+        ]
+
+        # Busca DESCMAT no Google Sheets (se configurado)
+        descmat = sheets_client.get_descmat_for_test(support_test_id)
+
+        # Se specimen_id estiver vazio e DESCMAT foi encontrado, adiciona às informações adicionais
+        if not specimen_id or specimen_id.strip() == "":
+            if descmat:
+                additional_info.append({"key": "DESCMAT", "value": descmat})
+                print(f"[sheets] DESCMAT '{descmat}' encontrado para test_id '{support_test_id}'")
+            else:
+                print(f"[sheets] Aviso: DESCMAT não encontrado para test_id '{support_test_id}' (specimen_id vazio)")
+
         tests.append({
             "externalId": item_ext,
             "collectionDate": d_col,
             "collectionTime": t_col,
             "supportTestId": support_test_id,
             "supportSpecimenId": specimen_id,
-            "additionalInformations": [
-                {"key": "origem", "value": it.get("Origem") or "API"},
-                {"key": "descricao", "value": it.get("DescExames") or ""},
-                {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
-            ],
+            "additionalInformations": additional_info,
             "condition": "",
             "preservative": "",
             "diuresisVolume": 0,

@@ -56,3 +56,10 @@ PHYSICIAN_NUM   = os.getenv("PHYSICIAN_NUMBER")
 PHYSICIAN_UF    = os.getenv("PHYSICIAN_UF")
 
 _TEST_MAP_PATH  = os.getenv("BEMSOFT_TEST_MAP_PATH")
+
+# =========================
+# Config Google Sheets
+# =========================
+GOOGLE_SHEET_ID    = os.getenv("GOOGLE_SHEET_ID")       # ID da planilha Google Sheets
+GOOGLE_SHEET_RANGE = os.getenv("GOOGLE_SHEET_RANGE", "Sheet1!A:C")  # Range das colunas (padrão: Sheet1!A:C)
+GOOGLE_API_KEY     = os.getenv("GOOGLE_API_KEY")        # API Key do Google Cloud
