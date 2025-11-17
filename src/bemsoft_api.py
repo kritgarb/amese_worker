@@ -18,7 +18,9 @@ class TestsIndex:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
-        self.cache: Dict[str, Dict[str, Any]] = {}
+        # Cache agora armazena lista de variantes para cada test_id
+        # {test_id: [{"name": "...", "specimen_id": "...", "specimen_name": "..."}, ...]}
+        self.cache: Dict[str, List[Dict[str, Any]]] = {}
 
     def ensure_loaded(self, session: Session):
         if self.cache:
@@ -32,15 +34,49 @@ class TestsIndex:
             tid = (t.get("id") or "").strip()
             if not tid:
                 continue
-            specimen_id = (t.get("specimen", {}) or {}).get("id")
-            self.cache[tid] = {"name": t.get("name"), "specimen_id": specimen_id}
+            specimen = t.get("specimen", {}) or {}
+            specimen_id = specimen.get("id")
+            specimen_name = specimen.get("name")
 
-    def specimen_for(self, session: Session, support_test_id: Optional[str]) -> Optional[str]:
+            # Adiciona à lista de variantes deste test_id
+            if tid not in self.cache:
+                self.cache[tid] = []
+
+            self.cache[tid].append({
+                "name": t.get("name"),
+                "specimen_id": specimen_id,
+                "specimen_name": specimen_name
+            })
+
+    def specimen_for(self, session: Session, support_test_id: Optional[str], descmat_hint: Optional[str] = None) -> Optional[str]:
+        """
+        Retorna specimen_id para um test_id.
+        Se descmat_hint for fornecido e houver múltiplas variantes, tenta matching por nome do material.
+        """
         if not support_test_id:
             return None
         self.ensure_loaded(session)
-        entry = self.cache.get(support_test_id)
-        return entry.get("specimen_id") if entry else None
+        variants = self.cache.get(support_test_id)
+
+        if not variants:
+            return None
+
+        # Se só há uma variante, retorna direto
+        if len(variants) == 1:
+            return variants[0].get("specimen_id")
+
+        # Se há múltiplas variantes e temos hint do DESCMAT, tenta matching
+        if descmat_hint:
+            hint_lower = descmat_hint.lower()
+            for variant in variants:
+                specimen_name = (variant.get("specimen_name") or "").lower()
+                if specimen_name and specimen_name in hint_lower:
+                    print(f"[tests] Match encontrado para '{support_test_id}': specimen '{specimen_name}' matches DESCMAT '{descmat_hint}'")
+                    return variant.get("specimen_id")
+
+        # Se não encontrou match ou não tem hint, usa a primeira variante e avisa
+        print(f"[tests] Aviso: '{support_test_id}' tem {len(variants)} variantes. Usando primeira: {variants[0].get('name')} (specimen: {variants[0].get('specimen_name')})")
+        return variants[0].get("specimen_id")
 
 _TESTS_INDEX: Optional[TestsIndex] = None
 def _get_tests_index() -> TestsIndex:
@@ -199,10 +235,15 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
         if not support_test_id:
             support_test_id = (it.get("CodigoExame") or "").strip()
 
+        # Busca informações do Google Sheets ANTES de resolver specimen_id
+        test_info = sheets_client.get_test_info(support_test_id)
+        descmat = test_info.get("SUPPORT_LAB_DESCMAT") if test_info else None
+
         if config.DRY_RUN:
             specimen_id = "SPECIMEN-TEST"
         else:
-            specimen_id = tests_index.specimen_for(sess, support_test_id)
+            # Passa descmat como hint para resolver ambiguidade de múltiplas variantes
+            specimen_id = tests_index.specimen_for(sess, support_test_id, descmat_hint=descmat)
             if not specimen_id:
                 raise ValueError(
                     f"supportSpecimenId ausente para supportTestId='{support_test_id}'. "
@@ -216,11 +257,9 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             {"key": "observacao_codigo_exame", "value": it.get("ExameDescricao") or ""},
         ]
 
-        # Busca informações do Google Sheets (se configurado) e adiciona quando disponível
-        test_info = sheets_client.get_test_info(support_test_id)
+        # Adiciona dados do Google Sheets quando disponível
         if test_info:
             test_name = test_info.get("TEST_NAME")
-            descmat = test_info.get("SUPPORT_LAB_DESCMAT")
 
             if test_name:
                 additional_info.append({"key": "SUPPORT_TEST_NAME", "value": test_name})
