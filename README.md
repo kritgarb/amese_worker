@@ -132,6 +132,94 @@ Atalhos (scripts prontos em `scripts/`):
 - Linux/macOS: `bash scripts/start_monitor.sh` e `bash scripts/stop_monitor.sh`
 - Windows: `scripts\start_monitor.bat` e `scripts\stop_monitor.bat`
 
+## Gerar executável e instalar como serviço Windows
+
+Para rodar automaticamente no servidor de produção, você pode gerar um executável standalone e instalá-lo como serviço Windows.
+
+### 1. Gerar o executável
+
+Na máquina de desenvolvimento (com o código-fonte):
+
+```batch
+build.bat
+```
+
+Este script vai:
+- Instalar o PyInstaller automaticamente
+- Gerar o arquivo `dist\BemsoftMonitor.exe` (executável único)
+- Incluir todas as dependências necessárias
+
+### 2. Preparar para deploy
+
+Copie os seguintes arquivos para o servidor:
+
+```
+BemsoftMonitor.exe  (do diretório dist/)
+.env                (configurado com as credenciais do servidor)
+install_service.bat
+uninstall_service.bat
+```
+
+Opcionalmente, copie também o `nssm.exe` (baixe de [nssm.cc](https://nssm.cc/download)) para a mesma pasta.
+
+### 3. Instalar como serviço Windows
+
+No servidor, execute como **Administrador**:
+
+```batch
+install_service.bat
+```
+
+Isso vai:
+- Verificar se o NSSM está instalado (necessário para gerenciar serviços)
+- Criar o serviço "BemsoftMonitor"
+- Configurar para iniciar automaticamente com o Windows
+- Criar logs em `logs\service_output.log` e `logs\service_error.log`
+- Iniciar o serviço imediatamente
+
+### 4. Gerenciar o serviço
+
+Comandos úteis (executar como Administrador):
+
+```batch
+# Ver status
+sc query BemsoftMonitor
+
+# Parar
+sc stop BemsoftMonitor
+
+# Iniciar
+sc start BemsoftMonitor
+
+# Ver logs em tempo real
+type logs\service_output.log
+```
+
+Ou use o gerenciador de serviços do Windows (`services.msc`).
+
+### 5. Desinstalar
+
+Para remover o serviço, execute como **Administrador**:
+
+```batch
+uninstall_service.bat
+```
+
+### Requisitos para o servidor
+
+O servidor Windows precisa ter instalado:
+- **ODBC Driver 18 for SQL Server** (ou outra versão configurada no `.env`)
+- **Visual C++ Redistributable** (geralmente já instalado)
+- O executável já inclui Python e todas as bibliotecas
+
+### Troubleshooting
+
+- **Erro de permissão**: Execute os scripts como Administrador
+- **NSSM não encontrado**: Baixe de [nssm.cc](https://nssm.cc/download) e coloque `nssm.exe` na mesma pasta
+- **Serviço não inicia**: Verifique os logs em `logs\service_error.log`
+- **Erro de conexão SQL**: Verifique o `.env` e se o ODBC Driver está instalado
+- **Arquivo .env não encontrado**: O `.env` deve estar na mesma pasta do executável
+
 ## Reprocessar falhas (retry)
 
 Use o script `retry_failed.py` para reenviar eventos salvos em `FAILED_DIR`.

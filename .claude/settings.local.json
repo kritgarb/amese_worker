@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b c:UsersbenjaPycharmProjectsdb_api*.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
