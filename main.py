@@ -6,6 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import date, datetime, time as dt_time
+import dotenv
+from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent
 SRC_DIR = ROOT_DIR / "src"
