@@ -9,10 +9,16 @@ from datetime import date, datetime, time as dt_time
 import dotenv
 from dotenv import load_dotenv
 
-ROOT_DIR = Path(__file__).resolve().parent
-SRC_DIR = ROOT_DIR / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+# Detecta se está rodando como executável PyInstaller
+if getattr(sys, 'frozen', False):
+    # Rodando como executável - módulos já estão no path do PyInstaller
+    pass
+else:
+    # Rodando em desenvolvimento - adiciona src/ ao path
+    ROOT_DIR = Path(__file__).resolve().parent
+    SRC_DIR = ROOT_DIR / "src"
+    if str(SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(SRC_DIR))
 
 import config
 import database
