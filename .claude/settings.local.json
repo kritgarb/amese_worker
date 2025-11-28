@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir /b c:UsersbenjaPycharmProjectsdb_api*.py)"
+      "Bash(dir /b c:UsersbenjaPycharmProjectsdb_api*.py)",
+      "Bash(dir:*)",
+      "Bash(cmd /c \"dir /b *.py\")",
+      "Bash(cmd /c \"dir /b *.spec 2>nul\")"
     ],
     "deny": [],
     "ask": []

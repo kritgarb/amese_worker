@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -6,10 +7,41 @@ from dotenv import load_dotenv
 # =========================
 # Config & utilidades base
 # =========================
-BASE_DIR = Path(__file__).resolve().parent
-ROOT_DIR = BASE_DIR.parent
-load_dotenv(ROOT_DIR / ".env", override=True)
-load_dotenv(BASE_DIR / ".env", override=True)
+
+# Detecta se está rodando como executável PyInstaller
+def _get_root_dir():
+    """
+    Retorna o diretório raiz do projeto.
+    Se rodando como executável PyInstaller, retorna o diretório onde o EXE está.
+    Se rodando em desenvolvimento (python main.py), retorna o diretório do projeto.
+    """
+    if getattr(sys, 'frozen', False):
+        # Rodando como executável PyInstaller
+        # sys.executable é o caminho completo do EXE
+        # Retorna o diretório onde o EXE está localizado
+        return Path(sys.executable).parent
+    else:
+        # Rodando em desenvolvimento
+        BASE_DIR = Path(__file__).resolve().parent  # src/
+        return BASE_DIR.parent  # raiz do projeto
+
+ROOT_DIR = _get_root_dir()
+BASE_DIR = ROOT_DIR / "src" if not getattr(sys, 'frozen', False) else ROOT_DIR
+
+# Carrega variáveis de ambiente do arquivo .env
+# No executável, procura .env no mesmo diretório do EXE
+env_path = ROOT_DIR / ".env"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+    print(f"[config] Carregado .env de: {env_path}")
+else:
+    print(f"[config] AVISO: Arquivo .env não encontrado em: {env_path}")
+
+# Tenta carregar .env do diretório src também (para compatibilidade)
+if not getattr(sys, 'frozen', False):
+    src_env = BASE_DIR / ".env"
+    if src_env.exists():
+        load_dotenv(src_env, override=True)
 
 # =========================
 # Config do Banco
