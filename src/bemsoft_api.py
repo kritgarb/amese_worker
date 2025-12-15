@@ -67,12 +67,19 @@ class TestsIndex:
 
         # Se há múltiplas variantes e temos hint do DESCMAT, tenta matching
         if descmat_hint:
-            hint_lower = descmat_hint.lower()
+            # Normaliza o hint: remove prefixos numéricos e pontos (ex: "0.Soro" -> "soro")
+            hint_normalized = descmat_hint.lower().strip()
+            # Remove padrão "número.palavra" -> "palavra"
+            if '.' in hint_normalized:
+                parts = hint_normalized.split('.', 1)
+                if parts[0].isdigit():
+                    hint_normalized = parts[1].strip()
+
             for variant in variants:
-                specimen_name = (variant.get("specimen_name") or "").lower()
+                specimen_name = (variant.get("specimen_name") or "").lower().strip()
                 # Verifica se o nome do specimen aparece no DESCMAT OU vice-versa
-                if specimen_name and (specimen_name in hint_lower or hint_lower in specimen_name):
-                    print(f"[tests] Match encontrado para '{support_test_id}': specimen '{specimen_name}' matches DESCMAT '{descmat_hint}'")
+                if specimen_name and (specimen_name in hint_normalized or hint_normalized in specimen_name):
+                    print(f"[tests] Match encontrado para '{support_test_id}': specimen '{specimen_name}' matches DESCMAT '{descmat_hint}' (normalizado: '{hint_normalized}')")
                     return variant.get("specimen_id")
 
         # Se não encontrou match ou não tem hint, usa a primeira variante e avisa
