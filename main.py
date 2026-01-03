@@ -26,6 +26,58 @@ import bemsoft_api
 
 
 PENDING_SOLICITACOES: Dict[Any, float] = {}
+_DESC_TO_CODIGO_CACHE: Dict[str, Optional[str]] = {}
+
+
+def _normalize_desc(desc: str) -> str:
+    """Normaliza descrição de exame para matching."""
+    return desc.strip().upper().replace("  ", " ")
+
+
+def _fallback_codigo_by_desc(desc_exame: str, cod_texame: Optional[int]) -> Optional[str]:
+    """
+    Busca CodigoExame pela descrição quando o LEFT JOIN falha (integridade referencial quebrada).
+    Primeiro tenta o mapping manual CODTEXAME_MAP, depois busca por descrição.
+    """
+    # 1. Tenta mapping manual CodTExame -> CodigoExame
+    if cod_texame and cod_texame in config.CODTEXAME_MAP:
+        codigo = config.CODTEXAME_MAP[cod_texame]
+        print(f"[mapping] CodTExame={cod_texame} -> '{codigo}' (CODTEXAME_MAP)")
+        return codigo
+
+    if not desc_exame:
+        return None
+
+    desc_norm = _normalize_desc(desc_exame)
+
+    # 2. Verifica cache de busca por descrição
+    if desc_norm in _DESC_TO_CODIGO_CACHE:
+        cached = _DESC_TO_CODIGO_CACHE[desc_norm]
+        if cached:
+            print(f"[fallback] Usando cache: '{desc_exame}' -> '{cached}' (CodTExame={cod_texame} não encontrado)")
+        return cached
+
+    # Busca no banco
+    try:
+        with database.get_connection() as conn:
+            result = conn.execute(
+                "SELECT TOP 1 CodigoExame FROM dbo.texame WHERE UPPER(LTRIM(RTRIM(descricao))) = :desc",
+                {"desc": desc_norm}
+            ).fetchone()
+
+            if result and result[0]:
+                codigo = result[0]
+                _DESC_TO_CODIGO_CACHE[desc_norm] = codigo
+                print(f"[fallback] '{desc_exame}' -> '{codigo}' (CodTExame={cod_texame} não existe, buscado por descrição)")
+                return codigo
+            else:
+                _DESC_TO_CODIGO_CACHE[desc_norm] = None
+                print(f"[fallback] Aviso: Descrição '{desc_exame}' não encontrada na tabela texame (CodTExame={cod_texame})")
+                return None
+
+    except Exception as e:
+        print(f"[fallback] Erro ao buscar código por descrição '{desc_exame}': {e}")
+        return None
 
 
 def _normalize_value(value: Any) -> Any:
@@ -59,9 +111,13 @@ def persist_failed(event: Dict[str, Any], reason: str = ""):
 
 def row_to_item(r: Dict[str, Any]) -> Dict[str, Any]:
     codigo_exame = r.get("CodigoExame")
-    # Se CodigoExame for NULL ou vazio, usa "XXXX"
+
+    # Se CodigoExame for NULL ou vazio, tenta buscar pela descrição
     if not codigo_exame or str(codigo_exame).strip() == "":
-        codigo_exame = "XXXX"
+        desc_exame = r.get("DescExames", "")
+        codigo_exame = _fallback_codigo_by_desc(desc_exame, r.get("CodTExame"))
+        if not codigo_exame:
+            codigo_exame = "XXXX"
 
     return {
         "CodItemSol": _normalize_value(r["CodItemSol"]),
@@ -121,8 +177,6 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
         # Agrupa por solicitação
         groups: Dict[Any, Dict[str, Any]] = {}
         for r in rows:
-            # Debug: mostra o que vem do banco para cada item
-            print(f"[debug] CodItemSol={r.get('CodItemSol')}, DescExames={r.get('DescExames')}, CodTExame={r.get('CodTExame')}, CodigoExame={r.get('CodigoExame')}")
             k = r["CodSolicitacao"]
             if k not in groups:
                 groups[k] = {"head": r, "items": []}

@@ -108,6 +108,22 @@ PHYSICIAN_UF    = os.getenv("PHYSICIAN_UF")
 
 _TEST_MAP_PATH  = os.getenv("BEMSOFT_TEST_MAP_PATH")
 
+# Mapeamento CodTExame -> CodigoExame para casos de integridade referencial quebrada
+# Formato: "113:PIDIO,114:OUTRO,115:TESTE"
+_CODTEXAME_MAP_RAW = os.getenv("CODTEXAME_MAP", "")
+CODTEXAME_MAP: dict = {}
+if _CODTEXAME_MAP_RAW:
+    try:
+        for pair in _CODTEXAME_MAP_RAW.split(","):
+            if ":" in pair:
+                cod_str, codigo_exame = pair.split(":", 1)
+                cod_texame = int(cod_str.strip())
+                CODTEXAME_MAP[cod_texame] = codigo_exame.strip()
+        if CODTEXAME_MAP:
+            print(f"[config] CODTEXAME_MAP carregado: {CODTEXAME_MAP}", flush=True)
+    except Exception as e:
+        print(f"[config] Erro ao parsear CODTEXAME_MAP: {e}", flush=True)
+
 # =========================
 # Config Google Sheets
 # =========================
