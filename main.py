@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import date, datetime, time as dt_time
 import dotenv
 from dotenv import load_dotenv
+from sqlalchemy import text
 
 # Detecta se está rodando como executável PyInstaller
 if getattr(sys, 'frozen', False):
@@ -57,11 +58,11 @@ def _fallback_codigo_by_desc(desc_exame: str, cod_texame: Optional[int]) -> Opti
             print(f"[fallback] Usando cache: '{desc_exame}' -> '{cached}' (CodTExame={cod_texame} não encontrado)")
         return cached
 
-    # Busca no banco
+    # 3. Busca no banco pela descrição
     try:
-        with database.get_connection() as conn:
+        with database.ENGINE.begin() as conn:
             result = conn.execute(
-                "SELECT TOP 1 CodigoExame FROM dbo.texame WHERE UPPER(LTRIM(RTRIM(descricao))) = :desc",
+                text("SELECT TOP 1 CodigoExame FROM dbo.texame WHERE UPPER(LTRIM(RTRIM(descricao))) = :desc"),
                 {"desc": desc_norm}
             ).fetchone()
 
