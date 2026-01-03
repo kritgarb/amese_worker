@@ -121,6 +121,8 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
         # Agrupa por solicitação
         groups: Dict[Any, Dict[str, Any]] = {}
         for r in rows:
+            # Debug: mostra o que vem do banco para cada item
+            print(f"[debug] CodItemSol={r.get('CodItemSol')}, DescExames={r.get('DescExames')}, CodTExame={r.get('CodTExame')}, CodigoExame={r.get('CodigoExame')}")
             k = r["CodSolicitacao"]
             if k not in groups:
                 groups[k] = {"head": r, "items": []}

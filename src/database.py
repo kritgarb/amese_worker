@@ -49,6 +49,7 @@ SQL_FETCH_TEMPLATE = """
 SELECT TOP (500)
     i.CodItemSol, i.CodSolicitacao, i.DataEntrada, i.DescExames, i.CodConvExames,
     i.NomeTerceirizado, i.Valor, i.VlTerceirizado, i.SituacaoResultado, i.Origem,
+    i.CodTExame,
 
     s.codpaciente, s.CodConvenio, s.dtaentrada AS Sol_dtaentrada, s.Hora, s.Valortotal, s.TipoPgto, s.Obs_Sol,
 
