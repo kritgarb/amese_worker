@@ -24,6 +24,7 @@ else:
 import config
 import database
 import bemsoft_api
+import telemed_client
 
 
 PENDING_SOLICITACOES: Dict[Any, float] = {}
@@ -240,6 +241,10 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
                 print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] exceção ao enviar (tempo: {send_duration:.2f}s): {e}")
                 persist_failed(event, reason=str(e))
 
+            # Sincroniza com o amese_telemed independentemente do resultado Bemsoft
+            if telemed_client.is_enabled():
+                telemed_client.sync_event(event)
+
             group_max = max(i["CodItemSol"] for i in g["items"])
             new_last = max(new_last, group_max)
             PENDING_SOLICITACOES.pop(cod, None)
@@ -255,12 +260,10 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
 
         return new_last
 
-
 def main():
     print("Monitor ItemSol -> Bemsoft iniciado.")
     filtro = ", ".join(config.TERCEIROS) if config.TERCEIROS else "<sem filtro>"
     print(
-        f"Filtro TERCEIROS='{filtro}' | Poll={config.POLL_SECONDS}s | "
         f"Debounce={config.DEBOUNCE_SECONDS}s | DRY_RUN={config.DRY_RUN}"
     )
     if not config.DRY_RUN and not config.TOKEN:

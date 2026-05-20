@@ -30,29 +30,21 @@ BASE_DIR = ROOT_DIR / "src" if not getattr(sys, 'frozen', False) else ROOT_DIR
 
 # Debug: mostra informações sobre o ambiente de execução
 _is_frozen = getattr(sys, 'frozen', False)
-print(f"[config] Modo: {'EXECUTAVEL' if _is_frozen else 'DESENVOLVIMENTO'}", flush=True)
-print(f"[config] ROOT_DIR: {ROOT_DIR}", flush=True)
-print(f"[config] BASE_DIR: {BASE_DIR}", flush=True)
+
 
 # Carrega variáveis de ambiente do arquivo .env
 # No executável, procura .env no mesmo diretório do EXE
 env_path = ROOT_DIR / ".env"
-print(f"[config] Procurando .env em: {env_path}", flush=True)
-print(f"[config] .env existe? {env_path.exists()}", flush=True)
 
 if env_path.exists():
     load_dotenv(env_path, override=True)
-    print(f"[config] ✓ Carregado .env de: {env_path}", flush=True)
-else:
-    print(f"[config] ✗ AVISO: Arquivo .env não encontrado em: {env_path}", flush=True)
-    print(f"[config] ✗ COPIE o arquivo .env para o mesmo diretório do executável!", flush=True)
+
 
 # Tenta carregar .env do diretório src também (para compatibilidade em desenvolvimento)
 if not _is_frozen:
     src_env = BASE_DIR / ".env"
     if src_env.exists():
         load_dotenv(src_env, override=True)
-        print(f"[config] ✓ Carregado .env adicional de: {src_env}", flush=True)
 
 # =========================
 # Config do Banco
@@ -62,12 +54,6 @@ DB     = os.getenv("DB_NAME", "Ame-se")
 USER   = os.getenv("DB_USER")
 PWD    = os.getenv("DB_PASS")
 DRIVER = os.getenv("ODBC_DRIVER", "ODBC Driver 18 for SQL Server")
-
-# Debug: mostra configurações críticas do banco
-print(f"[config] DB_SERVER: {SERVER}", flush=True)
-print(f"[config] DB_NAME: {DB}", flush=True)
-print(f"[config] ODBC_DRIVER: {DRIVER}", flush=True)
-print(f"[config] DB_USER definido: {'Sim' if USER else 'Não'}", flush=True)
 
 POLL_SECONDS     = int(os.getenv("POLL_SECONDS", "5"))
 DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "0"))  # 0 desliga
@@ -119,10 +105,16 @@ if _CODTEXAME_MAP_RAW:
                 cod_str, codigo_exame = pair.split(":", 1)
                 cod_texame = int(cod_str.strip())
                 CODTEXAME_MAP[cod_texame] = codigo_exame.strip()
-        if CODTEXAME_MAP:
-            print(f"[config] CODTEXAME_MAP carregado: {CODTEXAME_MAP}", flush=True)
     except Exception as e:
-        print(f"[config] Erro ao parsear CODTEXAME_MAP: {e}", flush=True)
+        print(f"Erro ao processar CODTEXAME_MAP: {e}")
+        CODTEXAME_MAP = {}
+
+# =========================
+# Config Telemed (amese_telemed)
+# =========================
+TELEMED_URL   = os.getenv("TELEMED_URL", "").rstrip("/")   # ex: http://localhost:3000
+TELEMED_TOKEN = os.getenv("TELEMED_TOKEN", "")             # deve coincidir com WORKER_SECRET no telemed
+TELEMED_TIMEOUT = int(os.getenv("TELEMED_TIMEOUT", "15"))
 
 # =========================
 # Config Google Sheets
