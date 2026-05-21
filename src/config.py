@@ -70,6 +70,15 @@ else:
 
 TERCEIRO = TERCEIROS[0] if TERCEIROS else ""
 
+# Filtro exclusivo para o telemed (exames de imagem).
+# Se vazio, o telemed não recebe nada além do que já está em TERCEIROS.
+_TELEMED_TERCEIROS_RAW = os.getenv("TELEMED_TERCEIROS")
+TELEMED_TERCEIROS: list = (
+    [t.strip() for t in _TELEMED_TERCEIROS_RAW.split(",") if t.strip()]
+    if _TELEMED_TERCEIROS_RAW
+    else []
+)
+
 os.makedirs(FAILED_DIR, exist_ok=True)
 
 # =========================

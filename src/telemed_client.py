@@ -40,6 +40,28 @@ def is_enabled() -> bool:
     return bool(config.TELEMED_URL and config.TELEMED_TOKEN)
 
 
+def get_filtros() -> list:
+    """
+    Busca a lista de NomeTerceirizado configurados para o Telemed.
+    Retorna lista vazia em caso de erro (worker não interrompe o ciclo).
+    """
+    if not is_enabled():
+        return []
+
+    url = config.TELEMED_URL + "/api/sync/filtros"
+    headers = {"Authorization": f"Bearer {config.TELEMED_TOKEN}"}
+
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=config.TELEMED_TIMEOUT)
+        if resp.status_code == 200:
+            return resp.json()
+        print(f"[telemed] erro ao buscar filtros (HTTP {resp.status_code})")
+        return []
+    except Exception as e:
+        print(f"[telemed] exceção ao buscar filtros: {e}")
+        return []
+
+
 def sync_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     Envia um evento (solicitacao + paciente + itens) para o telemed.

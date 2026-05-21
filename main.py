@@ -145,6 +145,7 @@ def build_group_event(head_row: Dict[str, Any], items: List[Dict[str, Any]]) -> 
         "Valortotal": _normalize_value(head_row["Valortotal"]),
         "TipoPgto": _normalize_value(head_row["TipoPgto"]),
         "Obs_Sol": _normalize_value(head_row["Obs_Sol"]),
+        "Medico": _normalize_value(head_row.get("Medico")),
     }
     paciente = {
         "nome": _normalize_value(head_row["PacienteNome"]),
@@ -167,7 +168,9 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
     with database.ENGINE.begin() as conn:
         query_start = datetime.now()
         last = conn.execute(database.SQL_GET_LAST).scalar() or 0
-        rows = database.fetch_items(conn, last, config.TERCEIROS)
+        telemed_filtros = telemed_client.get_filtros() or config.TELEMED_TERCEIROS
+        all_terceiros = list(dict.fromkeys(config.TERCEIROS + telemed_filtros))
+        rows = database.fetch_items(conn, last, all_terceiros)
         query_end = datetime.now()
         query_duration = (query_end - query_start).total_seconds()
 
@@ -217,32 +220,43 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
                 )
             return last
 
+        bemsoft_set = set(config.TERCEIROS)
+        telemed_set  = set(telemed_filtros)
+
         new_last = last
         for cod, g in ready_groups:
             event = build_group_event(g["head"], g["items"])
             send_start = datetime.now()
-            print(f"[{send_start.strftime('%Y-%m-%d %H:%M:%S')}] Enviando solicitação {cod} com {len(g['items'])} item(ns)...")
 
-            try:
-                result = bemsoft_api.send_to_bemsoft(event, session=sess_http, print_payload=True)
-                send_end = datetime.now()
-                send_duration = (send_end - send_start).total_seconds()
+            item_nomes = {i.get("NomeTerceirizado") for i in g["items"]}
+            send_bemsoft = bool(item_nomes & bemsoft_set)
+            send_telemed = bool(item_nomes & telemed_set)
 
-                ok = result.get("ok")
-                status = result.get("status")
-                if ok:
-                    print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] entregue com sucesso (status={status}, tempo: {send_duration:.2f}s).")
-                else:
-                    print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] erro (status={status}, tempo: {send_duration:.2f}s): {result.get('error')}")
-                    persist_failed(event, reason=f"HTTP {status}: {result.get('error')}")
-            except Exception as e:
-                send_end = datetime.now()
-                send_duration = (send_end - send_start).total_seconds()
-                print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] exceção ao enviar (tempo: {send_duration:.2f}s): {e}")
-                persist_failed(event, reason=str(e))
+            destinos = []
+            if send_bemsoft: destinos.append("Bemsoft")
+            if send_telemed and telemed_client.is_enabled(): destinos.append("Telemed")
+            print(f"[{send_start.strftime('%Y-%m-%d %H:%M:%S')}] Enviando solicitação {cod} com {len(g['items'])} item(ns) → {', '.join(destinos) or 'nenhum destino'}...")
 
-            # Sincroniza com o amese_telemed independentemente do resultado Bemsoft
-            if telemed_client.is_enabled():
+            if send_bemsoft:
+                try:
+                    result = bemsoft_api.send_to_bemsoft(event, session=sess_http, print_payload=True)
+                    send_end = datetime.now()
+                    send_duration = (send_end - send_start).total_seconds()
+
+                    ok = result.get("ok")
+                    status = result.get("status")
+                    if ok:
+                        print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] entregue com sucesso (status={status}, tempo: {send_duration:.2f}s).")
+                    else:
+                        print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] erro (status={status}, tempo: {send_duration:.2f}s): {result.get('error')}")
+                        persist_failed(event, reason=f"HTTP {status}: {result.get('error')}")
+                except Exception as e:
+                    send_end = datetime.now()
+                    send_duration = (send_end - send_start).total_seconds()
+                    print(f"[{send_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] exceção ao enviar (tempo: {send_duration:.2f}s): {e}")
+                    persist_failed(event, reason=str(e))
+
+            if send_telemed and telemed_client.is_enabled():
                 telemed_client.sync_event(event)
 
             group_max = max(i["CodItemSol"] for i in g["items"])
