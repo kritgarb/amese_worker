@@ -57,9 +57,19 @@ DRIVER = os.getenv("ODBC_DRIVER", "ODBC Driver 18 for SQL Server")
 
 POLL_SECONDS     = int(os.getenv("POLL_SECONDS", "5"))
 DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "0"))  # 0 desliga
+# Teto absoluto da janela de edicao: mesmo que a atendente siga editando, a
+# solicitacao e despachada apos este tempo desde que foi vista pela primeira vez.
+MAX_DEBOUNCE_SECONDS = int(os.getenv("MAX_DEBOUNCE_SECONDS", "300"))
 # Usa caminho absoluto para FAILED_DIR (importante para rodar como serviço Windows)
 _FAILED_DIR_DEFAULT = str(ROOT_DIR / "completo" / "failed_events")
 FAILED_DIR       = os.getenv("FAILED_DIR", _FAILED_DIR_DEFAULT)
+
+# Diretório dos logs .txt legíveis (itens rejeitados, envios parciais, etc.)
+_LOG_DIR_DEFAULT = str(ROOT_DIR / "completo" / "logs")
+LOG_DIR          = os.getenv("LOG_DIR", _LOG_DIR_DEFAULT)
+
+# Quantas vezes um evento na fila de reenvio pode falhar antes de ir para dead/
+MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "10"))
 
 _TERCEIROS_RAW = os.getenv("TERCEIROS")
 if _TERCEIROS_RAW:
@@ -80,6 +90,7 @@ TELEMED_TERCEIROS: list = (
 )
 
 os.makedirs(FAILED_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # =========================
 # Config Bemsoft
@@ -102,6 +113,11 @@ PHYSICIAN_NUM   = os.getenv("PHYSICIAN_NUMBER")
 PHYSICIAN_UF    = os.getenv("PHYSICIAN_UF")
 
 _TEST_MAP_PATH  = os.getenv("BEMSOFT_TEST_MAP_PATH")
+# Resolve caminho relativo contra a raiz do projeto: rodando como servico Windows o
+# diretorio de trabalho nao e a pasta do worker, e o mapa era carregado em silencio
+# como vazio.
+if _TEST_MAP_PATH and not os.path.isabs(_TEST_MAP_PATH):
+    _TEST_MAP_PATH = str((ROOT_DIR / _TEST_MAP_PATH).resolve())
 
 # Mapeamento CodTExame -> CodigoExame para casos de integridade referencial quebrada
 # Formato: "113:PIDIO,114:OUTRO,115:TESTE"

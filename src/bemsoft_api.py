@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import uuid
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, date, timezone, timedelta
 
@@ -11,6 +13,7 @@ from urllib3.util.retry import Retry
 
 import config
 import sheets_client
+import logger_txt
 
 # ===== Cache de /tests =====
 class TestsIndex:
@@ -145,8 +148,27 @@ def _choose_date_time(solicitacao: Dict[str, Any], itens: List[Dict[str, Any]]) 
 def _uuid() -> str:
     return str(uuid.uuid4())
 
-def _idemp_key(codsol: Any) -> str:
-    return f"sol-{codsol}" if codsol is not None else f"sol-{_uuid()}"
+def _itens_fingerprint(itens: List[Dict[str, Any]]) -> str:
+    """
+    Hash curto do conjunto exato de itens do payload.
+
+    Usado na Idempotency-Key e nos externalId. Sem isso, uma solicitacao que
+    recebe exames novos depois de ja ter sido enviada reusaria a mesma chave,
+    o Bemsoft devolveria 409 e os exames acrescentados seriam descartados em
+    silencio.
+    """
+    ids = ",".join(
+        str(i.get("CodItemSol"))
+        for i in sorted(itens or [], key=lambda x: (x.get("CodItemSol") is None, x.get("CodItemSol")))
+    )
+    return hashlib.sha1(ids.encode("utf-8")).hexdigest()[:12]
+
+
+def _idemp_key(codsol: Any, itens: Optional[List[Dict[str, Any]]] = None) -> str:
+    base = f"sol-{codsol}" if codsol is not None else f"sol-{_uuid()}"
+    if itens:
+        return f"{base}-{_itens_fingerprint(itens)}"
+    return base
 
 def map_support_test(local_code: Optional[str]) -> Optional[str]:
     if not local_code:
@@ -172,14 +194,20 @@ def _build_session() -> Session:
     s.mount("http://", adapter)
     return s
 
-def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> Dict[str, Any]:
+def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Monta o payload do Bemsoft.
+
+    Retorna (payload, rejeitados). Itens que nao resolvem supportSpecimenId sao
+    separados em `rejeitados` em vez de abortarem a requisicao inteira: o restante
+    da solicitacao segue normalmente e os rejeitados vao para o log .txt.
+    `payload` vem None quando nenhum item sobrou.
+    """
     solicitacao = event.get("solicitacao", {}) or {}
     paciente    = event.get("paciente", {}) or {}
     itens       = event.get("itens", []) or []
 
     codsol   = solicitacao.get("codsolicitacao")
-    batch_id = f"sol-{codsol}" if codsol is not None else f"sol-{_uuid()}"
-    order_id = f"order-{codsol}" if codsol is not None else f"order-{_uuid()}"
     bdate, btime = _choose_date_time(solicitacao, itens)
 
     # patient.externalId
@@ -233,6 +261,8 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
     tests_index: Optional[TestsIndex] = None if config.DRY_RUN else _get_tests_index()
 
     tests: List[Dict[str, Any]] = []
+    rejeitados: List[Dict[str, Any]] = []
+    aceitos: List[Dict[str, Any]] = []
     for it in itens:
         item_ext = f"item-{it.get('CodItemSol') or _uuid()}"
         d_col, t_col = _split_iso(it.get("DataEntrada"))
@@ -256,10 +286,25 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             specimen_id = tests_index.specimen_for(sess, support_test_id, descmat_hint=descmat)
             print(f"[debug] specimen_id retornado: '{specimen_id}'")
             if not specimen_id:
-                raise ValueError(
-                    f"supportSpecimenId ausente para supportTestId='{support_test_id}'. "
-                    f"Ajuste o mapping (BEMSOFT_TEST_MAP_PATH) ou o catálogo /tests."
+                motivo = (
+                    f"supportSpecimenId ausente para supportTestId='{support_test_id}'"
                 )
+                if support_test_id == "XXXX":
+                    acao = (
+                        "CodigoExame nao resolvido no banco (texame). Verifique se o exame pertence "
+                        "a este destino e cadastre o CodTExame em CODTEXAME_MAP no .env."
+                    )
+                else:
+                    acao = (
+                        f"Codigo '{support_test_id}' nao existe no catalogo /tests do Bemsoft ou nao "
+                        f"possui specimen. Ajuste BEMSOFT_TEST_MAP_PATH ou solicite o cadastro no Bemsoft."
+                    )
+                print(
+                    f"[bemsoft] item {it.get('CodItemSol')} RECUSADO ('{it.get('DescExames')}'): {motivo}. "
+                    f"Os demais itens da solicitacao {codsol} seguem normalmente."
+                )
+                rejeitados.append({"item": it, "motivo": motivo, "acao": acao})
+                continue
 
         # Monta additionalInformations base
         additional_info = [
@@ -280,6 +325,7 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
 
             print(f"[sheets] Dados encontrados para '{support_test_id}': TEST_NAME='{test_name}', DESCMAT='{descmat}'")
 
+        aceitos.append(it)
         tests.append({
             "externalId": item_ext,
             "collectionDate": d_col,
@@ -292,6 +338,16 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             "diuresisVolume": 0,
             "diuresisTime": 0,
         })
+
+    if not tests:
+        # Nada sobrou para enviar: devolve apenas os rejeitados.
+        return None, rejeitados
+
+    # externalId/Idempotency-Key derivam do conjunto exato de itens aceitos, para que
+    # exames acrescentados depois a uma solicitacao ja enviada gerem uma nova chave.
+    fp = _itens_fingerprint(aceitos)
+    batch_id = f"sol-{codsol}-{fp}" if codsol is not None else f"sol-{_uuid()}"
+    order_id = f"order-{codsol}-{fp}" if codsol is not None else f"order-{_uuid()}"
 
     # Monta o order sem physician se não estiver disponível
     order_data = {
@@ -323,37 +379,50 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> D
             "order": order_data
         }
     }
-    return payload
+    return payload, rejeitados
 
 def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, print_payload: bool = False) -> Dict[str, Any]:
     """Transforma e envia POST /requests (ou apenas gera no DRY_RUN)."""
     if config.DRY_RUN:
         payload_start = datetime.now()
-        payload = build_payload(event, session=None)
+        payload, rejeitados = build_payload(event, session=None)
         payload_end = datetime.now()
         payload_duration = (payload_end - payload_start).total_seconds()
         print(f"[{payload_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] DRY_RUN ativo. Payload gerado em {payload_duration:.2f}s, não enviado.")
         if print_payload:
             import json
             print(f"\n== PAYLOAD ENVIADO ==\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n")
-        return {"ok": True, "status": 200, "data": {"dryRun": True, "payload": payload}}
+        return {"ok": True, "status": 200, "rejected": rejeitados,
+                "data": {"dryRun": True, "payload": payload}}
 
     if not config.TOKEN:
-        return {"ok": False, "status": 401, "error": "BEMSOFT_TOKEN não configurado (Bearer)"}
+        return {"ok": False, "status": 401, "rejected": [],
+                "error": "BEMSOFT_TOKEN não configurado (Bearer)"}
 
     sess = session or _build_session()
-    headers = {
-        "Authorization": f"Bearer {config.TOKEN}",
-        "Content-Type": "application/json",
-        "Idempotency-Key": _idemp_key(event.get("solicitacao", {}).get("codsolicitacao")),
-    }
     url = config.BASE_URL.rstrip("/") + config.REQS_ENDPOINT
 
     payload_start = datetime.now()
-    payload = build_payload(event, session=sess)
+    payload, rejeitados = build_payload(event, session=sess)
     payload_end = datetime.now()
     payload_duration = (payload_end - payload_start).total_seconds()
     print(f"[{payload_end.strftime('%Y-%m-%d %H:%M:%S')}] [bemsoft] Payload construído em {payload_duration:.2f}s")
+
+    if payload is None:
+        # Todos os itens foram recusados na montagem: nao ha o que enviar.
+        print(f"[bemsoft] nenhum item elegível após validação "
+              f"({len(rejeitados)} recusado(s)); POST não realizado.")
+        return {"ok": True, "status": 0, "rejected": rejeitados,
+                "nothing_to_send": True, "data": None}
+
+    aceitos = payload["batch"]["order"]["tests"]
+    headers = {
+        "Authorization": f"Bearer {config.TOKEN}",
+        "Content-Type": "application/json",
+        # Derivada do conjunto exato de itens aceitos: exames acrescentados depois a uma
+        # solicitacao ja enviada produzem uma chave nova, em vez de colidirem em 409.
+        "Idempotency-Key": payload["batch"]["externalId"],
+    }
 
     if print_payload:
         import json as json_module
@@ -384,22 +453,208 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, pr
 
     # 201: Sucesso na criação do request
     if status == 201:
-        return {"ok": True, "status": status, "data": body}
+        return {"ok": True, "status": status, "data": body, "rejected": rejeitados,
+                "sent_count": len(aceitos)}
 
-    # 409: Idempotência (request já foi processado anteriormente)
+    # 409: Idempotência. Com a chave derivada do conjunto de itens, um 409 significa que
+    # ESTE MESMO conjunto ja havia sido aceito antes — nada novo foi criado. Continua
+    # contando como entregue (nao adianta reenviar), mas fica explicito no log.
     if status == 409:
-        return {"ok": True, "status": status, "data": body, "idempotent": True}
+        print(f"[bemsoft] 409 — conjunto idêntico já processado (chave={headers['Idempotency-Key']}); "
+              f"NADA foi criado agora.")
+        return {"ok": True, "status": status, "data": body, "idempotent": True,
+                "rejected": rejeitados, "sent_count": 0}
 
-    # 400: Erro de validação
+    # 400: Erro de validação — reenviar igual não resolve.
     if status == 400:
-        return {"ok": False, "status": status, "error": body, "validation_error": True}
+        return {"ok": False, "status": status, "error": body, "validation_error": True,
+                "rejected": rejeitados, "retryable": False}
 
-    # 401: Token ausente ou inválido
+    # 401: Token ausente ou inválido — reenviar igual não resolve.
     if status == 401:
-        return {"ok": False, "status": status, "error": body, "auth_error": True}
+        return {"ok": False, "status": status, "error": body, "auth_error": True,
+                "rejected": rejeitados, "retryable": False}
 
     # Outros status codes
     if 200 <= status < 300:
-        return {"ok": True, "status": status, "data": body}
+        return {"ok": True, "status": status, "data": body, "rejected": rejeitados,
+                "sent_count": len(aceitos)}
 
-    return {"ok": False, "status": status, "error": body}
+    # 5xx e demais: transitório, vale reenviar.
+    return {"ok": False, "status": status, "error": body, "rejected": rejeitados,
+            "retryable": True}
+
+
+# =========================================================================
+# Fila de reenvio (espelha o comportamento do telemed_client)
+# =========================================================================
+# IMPORTANTE: a fila vive em FAILED_DIR/bemsoft_pending/, um diretório NOVO.
+# Os JSON históricos na raiz de FAILED_DIR são dead-letter e NUNCA são
+# reenviados automaticamente — evita duplicar o que já foi cadastrado à mão.
+
+_CIRCUIT_RETRY_INTERVAL = 60
+
+_down_since: Optional[float] = None
+_last_attempt: Optional[float] = None
+
+
+def _circuit_open() -> bool:
+    """True enquanto o Bemsoft está inacessível e o intervalo não passou."""
+    if _down_since is None:
+        return False
+    return (time.time() - (_last_attempt or _down_since)) < _CIRCUIT_RETRY_INTERVAL
+
+
+def _on_connect_error(e: Exception) -> None:
+    global _down_since, _last_attempt
+    _last_attempt = time.time()
+    if _down_since is None:
+        _down_since = _last_attempt
+        print(f"[bemsoft] serviço indisponível — próxima tentativa em {_CIRCUIT_RETRY_INTERVAL}s.")
+        logger_txt.log_texto("envios", f"BEMSOFT INDISPONIVEL: {e}")
+
+
+def _on_connect_ok() -> None:
+    global _down_since, _last_attempt
+    if _down_since is not None:
+        print("[bemsoft] serviço disponível novamente.")
+        logger_txt.log_texto("envios", "BEMSOFT DISPONIVEL NOVAMENTE")
+    _down_since = None
+    _last_attempt = None
+
+
+def _get_pending_dir() -> str:
+    path = os.path.join(config.FAILED_DIR, "bemsoft_pending")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _get_dead_dir() -> str:
+    path = os.path.join(config.FAILED_DIR, "bemsoft_dead")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def persist_pending(event: Dict[str, Any], reason: str = "", attempts: int = 0) -> Optional[str]:
+    """Enfileira um evento para reenvio automático quando o Bemsoft voltar."""
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    cod = (event.get("solicitacao", {}) or {}).get("codsolicitacao", "unknown")
+    path = os.path.join(_get_pending_dir(), f"{ts}_{cod}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"reason": reason, "attempts": attempts, "event": event},
+                      f, ensure_ascii=False, indent=2, default=str)
+        print(f"[bemsoft] evento enfileirado para reenvio: {path}")
+        logger_txt.log_texto("envios", f"ENFILEIRADO sol={cod} motivo={reason} arquivo={os.path.basename(path)}")
+        return path
+    except Exception as e:
+        print(f"[bemsoft] falha ao enfileirar evento da solicitação {cod}: {e}")
+        return None
+
+
+def _move_to_dead(fpath: str, motivo: str) -> None:
+    try:
+        dest = os.path.join(_get_dead_dir(), os.path.basename(fpath))
+        os.replace(fpath, dest)
+        print(f"[bemsoft] evento movido para dead-letter ({motivo}): {dest}")
+        logger_txt.log_texto("envios", f"DEAD-LETTER {os.path.basename(fpath)} motivo={motivo}")
+    except Exception as e:
+        print(f"[bemsoft] falha ao mover {fpath} para dead-letter: {e}")
+
+
+def retry_pending(session: Optional[Session] = None) -> int:
+    """
+    Reenvia eventos acumulados na fila do Bemsoft.
+    Para no primeiro erro transitório (serviço ainda fora) e respeita o circuit breaker.
+    Eventos que estouram MAX_RETRY_ATTEMPTS ou que falham por erro definitivo
+    (400/401) vão para bemsoft_dead/ em vez de travar a fila.
+    Retorna quantos foram entregues.
+    """
+    if config.DRY_RUN or _circuit_open():
+        return 0
+
+    pending_dir = _get_pending_dir()
+    try:
+        files = sorted(f for f in os.listdir(pending_dir) if f.endswith(".json"))
+    except Exception:
+        return 0
+    if not files:
+        return 0
+
+    print(f"[bemsoft] {len(files)} evento(s) pendente(s) — tentando reenvio...")
+    sent = 0
+
+    for fname in files:
+        fpath = os.path.join(pending_dir, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            event = data["event"]
+            attempts = int(data.get("attempts", 0)) + 1
+        except Exception as e:
+            print(f"[bemsoft] arquivo de fila ilegível {fname}: {e}")
+            _move_to_dead(fpath, f"arquivo ilegivel: {e}")
+            continue
+
+        cod = (event.get("solicitacao", {}) or {}).get("codsolicitacao", "?")
+
+        try:
+            result = send_to_bemsoft(event, session=session, print_payload=False)
+        except Exception as e:
+            _on_connect_error(e)
+            data["attempts"] = attempts
+            data["reason"] = f"exceção no reenvio: {e}"
+            try:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            except Exception:
+                pass
+            if attempts >= config.MAX_RETRY_ATTEMPTS:
+                _move_to_dead(fpath, f"{attempts} tentativas sem sucesso")
+                continue
+            break  # serviço ainda fora — não insiste neste ciclo
+
+        rejeitados = result.get("rejected") or []
+        if rejeitados:
+            enviados_itens = [
+                i for i in (event.get("itens") or [])
+                if i not in [r.get("item") for r in rejeitados]
+            ]
+            logger_txt.log_rejeitados(event, rejeitados, enviados_itens, destino="Bemsoft (reenvio)")
+
+        if result.get("ok"):
+            _on_connect_ok()
+            os.remove(fpath)
+            sent += 1
+            print(f"[bemsoft] reenvio OK: solicitação {cod} (tentativa {attempts})")
+            logger_txt.log_envio(event, "Bemsoft", event.get("itens") or [],
+                                 f"REENVIO OK status={result.get('status')}",
+                                 f"tentativa {attempts}")
+            continue
+
+        # Falhou.
+        if result.get("retryable") is False:
+            logger_txt.log_envio(event, "Bemsoft", event.get("itens") or [],
+                                 f"REENVIO FALHOU DEFINITIVO status={result.get('status')}",
+                                 str(result.get("error"))[:300])
+            _move_to_dead(fpath, f"erro definitivo HTTP {result.get('status')}")
+            continue
+
+        data["attempts"] = attempts
+        data["reason"] = f"HTTP {result.get('status')}: {result.get('error')}"
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            pass
+
+        if attempts >= config.MAX_RETRY_ATTEMPTS:
+            _move_to_dead(fpath, f"{attempts} tentativas sem sucesso")
+            continue
+
+        print(f"[bemsoft] reenvio da solicitação {cod} falhou (tentativa {attempts}); tenta no próximo ciclo.")
+        break
+
+    if sent:
+        print(f"[bemsoft] {sent} evento(s) reenviado(s) com sucesso.")
+    return sent
