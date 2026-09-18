@@ -162,6 +162,33 @@ def build_group_event(head_row: Dict[str, Any], items: List[Dict[str, Any]]) -> 
     return {"solicitacao": solicitacao, "paciente": paciente, "itens": items}
 
 
+def _split_por_data_coleta(itens: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """
+    Separa os itens em um lote por data de coleta.
+
+    O WiseLab aceita com HTTP 201 mas nao grava o teste cuja collectionDate e
+    posterior a data do lote — caso tipico da urina de final de jornada (acido
+    mandelico, cadmio, manganes) e das fezes entregues dias depois. Separando por
+    data, cada lote carrega a propria data de coleta e nenhum item fica fora dela.
+
+    Quando todos coletam no mesmo dia (caso comum) devolve um unico lote, e o
+    payload sai identico ao de antes.
+    """
+    if not itens:
+        return []
+    if not config.SPLIT_BY_COLLECTION or len(itens) == 1:
+        return [itens]
+
+    por_data: Dict[str, List[Dict[str, Any]]] = {}
+    for i in itens:
+        dia = str(i.get("DataEntrada") or "")[:10]
+        por_data.setdefault(dia, []).append(i)
+
+    if len(por_data) == 1:
+        return [itens]
+    return [por_data[k] for k in sorted(por_data)]
+
+
 def _group_fingerprint(head_row: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
     """
     Assinatura do conteudo da solicitacao (cabecalho + itens).
@@ -322,7 +349,13 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
             itens_ok: List[Any] = []   # CodItemSol que não devem mais ser reprocessados
 
             # ----------------------------- Bemsoft -----------------------------
-            if itens_bemsoft:
+            # Um POST por data de coleta (ver _split_por_data_coleta).
+            lotes_bemsoft = _split_por_data_coleta(itens_bemsoft)
+            if len(lotes_bemsoft) > 1:
+                print(f"[bemsoft] solicitação {cod} separada em {len(lotes_bemsoft)} lote(s) "
+                      f"por data de coleta: "
+                      f"{[str(l[0].get('DataEntrada'))[:10] for l in lotes_bemsoft]}")
+            for itens_bemsoft in lotes_bemsoft:
                 event_b = build_group_event(g["head"], itens_bemsoft)
                 try:
                     result = bemsoft_api.send_to_bemsoft(event_b, session=sess_http, print_payload=True)

@@ -101,8 +101,20 @@ TOKEN           = os.getenv("BEMSOFT_TOKEN")
 TIMEOUT         = int(os.getenv("BEMSOFT_TIMEOUT", "30"))
 RETRIES_TOTAL   = int(os.getenv("BEMSOFT_RETRIES", "3"))
 RETRIES_BACKOFF = float(os.getenv("BEMSOFT_BACKOFF", "0.5"))
+# Validade do catalogo /tests em memoria. Antes era carregado uma unica vez por
+# processo: exame cadastrado no Bemsoft so passava a valer reiniciando o worker.
+TESTS_TTL       = int(os.getenv("BEMSOFT_TESTS_TTL", "1800"))       # 30 min
+TESTS_MIN_REFRESH = int(os.getenv("BEMSOFT_TESTS_MIN_REFRESH", "120"))  # anti-martelo
 VERIFY_TLS      = os.getenv("BEMSOFT_VERIFY", "1") != "0"
 DRY_RUN         = os.getenv("BEMSOFT_DRY_RUN", "0") == "1"
+# Sufixo de conteudo no batch/order externalId. Desligado: o WiseLab recusou o
+# formato longo ("nao foi possivel salvar os dados recebidos no lote").
+EXTID_SUFFIX    = os.getenv("BEMSOFT_EXTID_SUFFIX", "0") == "1"
+EXTID_HASH_LEN  = int(os.getenv("BEMSOFT_EXTID_HASH_LEN", "6"))
+# Um lote por data de coleta. O WiseLab descarta em silencio o teste cuja
+# collectionDate e posterior a data do lote (urina de final de jornada, fezes
+# entregues dias depois). Com isto cada lote leva a propria data de coleta.
+SPLIT_BY_COLLECTION = os.getenv("BEMSOFT_SPLIT_BY_COLLECTION", "1") == "1"
 
 DEFAULT_GENDER  = (os.getenv("DEFAULT_GENDER") or "").strip().upper()  # "M" ou "F"
 DEFAULT_BIRTH   = os.getenv("DEFAULT_BIRTHDATE")  # "YYYY-MM-DD"

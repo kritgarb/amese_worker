@@ -21,35 +21,68 @@ class TestsIndex:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
-        # Cache agora armazena lista de variantes para cada test_id
+        # Cache armazena lista de variantes para cada test_id
         # {test_id: [{"name": "...", "specimen_id": "...", "specimen_name": "..."}, ...]}
         self.cache: Dict[str, List[Dict[str, Any]]] = {}
+        self.loaded_at: Optional[float] = None      # quando o catalogo foi carregado
+        self.last_refresh_try: Optional[float] = None
 
-    def ensure_loaded(self, session: Session):
-        if self.cache:
+    def _expirado(self) -> bool:
+        if self.loaded_at is None:
+            return True
+        if config.TESTS_TTL <= 0:
+            return False
+        return (time.time() - self.loaded_at) >= config.TESTS_TTL
+
+    def ensure_loaded(self, session: Session, force: bool = False):
+        """
+        Carrega o catalogo /tests. Recarrega quando expira o TTL ou quando forcado.
+
+        O cache antigo so e substituido se a nova leitura der certo — uma falha
+        momentanea no Bemsoft nao pode zerar um catalogo que estava bom.
+        """
+        if self.cache and not force and not self._expirado():
             return
+
+        self.last_refresh_try = time.time()
         url = f"{self.base_url}/tests"
-        resp = session.get(url, headers={"Authorization": f"Bearer {self.token}"}, timeout=self.timeout)
+        try:
+            resp = session.get(url, headers={"Authorization": f"Bearer {self.token}"}, timeout=self.timeout)
+        except Exception as e:
+            if self.cache:
+                print(f"[tests] falha ao recarregar catalogo ({e}); mantendo o cache anterior.")
+                return
+            raise
+
         if resp.status_code != 200:
+            if self.cache:
+                print(f"[tests] falha ao recarregar catalogo (HTTP {resp.status_code}); mantendo o cache anterior.")
+                return
             raise RuntimeError(f"Falha ao carregar /tests ({resp.status_code}): {resp.text}")
+
         data = resp.json() or {}
+        novo: Dict[str, List[Dict[str, Any]]] = {}
         for t in (data.get("tests") or []):
             tid = (t.get("id") or "").strip()
             if not tid:
                 continue
             specimen = t.get("specimen", {}) or {}
-            specimen_id = specimen.get("id")
-            specimen_name = specimen.get("name")
-
-            # Adiciona à lista de variantes deste test_id
-            if tid not in self.cache:
-                self.cache[tid] = []
-
-            self.cache[tid].append({
+            novo.setdefault(tid, []).append({
                 "name": t.get("name"),
-                "specimen_id": specimen_id,
-                "specimen_name": specimen_name
+                "specimen_id": specimen.get("id"),
+                "specimen_name": specimen.get("name"),
             })
+
+        anterior = set(self.cache)
+        self.cache = novo
+        self.loaded_at = time.time()
+
+        novos_ids = set(novo) - anterior
+        if anterior and novos_ids:
+            print(f"[tests] catalogo recarregado: {len(novo)} codigo(s), "
+                  f"{len(novos_ids)} novo(s) desde a ultima leitura.")
+        else:
+            print(f"[tests] catalogo carregado: {len(novo)} codigo(s) distinto(s).")
 
     def specimen_for(self, session: Session, support_test_id: Optional[str], descmat_hint: Optional[str] = None) -> Optional[str]:
         """
@@ -62,7 +95,22 @@ class TestsIndex:
         variants = self.cache.get(support_test_id)
 
         if not variants:
-            return None
+            # Codigo desconhecido: pode ter acabado de ser cadastrado no Bemsoft.
+            # Releitura imediata do catalogo, limitada por TESTS_MIN_REFRESH para
+            # nao disparar um GET /tests a cada item de um codigo realmente inexistente.
+            agora = time.time()
+            pode_tentar = (
+                self.last_refresh_try is None
+                or (agora - self.last_refresh_try) >= config.TESTS_MIN_REFRESH
+            )
+            if pode_tentar:
+                print(f"[tests] '{support_test_id}' ausente do cache — recarregando catalogo...")
+                self.ensure_loaded(session, force=True)
+                variants = self.cache.get(support_test_id)
+                if variants:
+                    print(f"[tests] '{support_test_id}' encontrado após recarga do catálogo.")
+            if not variants:
+                return None
 
         # Se só há uma variante, retorna direto
         if len(variants) == 1:
@@ -178,6 +226,21 @@ def map_support_test(local_code: Optional[str]) -> Optional[str]:
         return None
     mapped = _TEST_MAP.get(key.upper())
     return mapped or key
+
+def _erro_no_corpo(body: Any) -> Optional[str]:
+    """
+    O WiseLab pode responder HTTP 201 com um erro no corpo, por exemplo:
+        201 {"error": "Nao foi possivel salvar os dados recebidos no lote sol-X."}
+    Tratar 201 como sucesso cego fazia o worker dar o lote por entregue enquanto
+    nada era gravado. Qualquer campo de erro preenchido invalida o sucesso.
+    """
+    if isinstance(body, dict):
+        for chave in ("error", "errors", "erro", "erros", "message_error", "mensagemErro"):
+            valor = body.get(chave)
+            if valor:
+                return str(valor)
+    return None
+
 
 def _build_session() -> Session:
     s = requests.Session()
@@ -343,11 +406,38 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> T
         # Nada sobrou para enviar: devolve apenas os rejeitados.
         return None, rejeitados
 
-    # externalId/Idempotency-Key derivam do conjunto exato de itens aceitos, para que
-    # exames acrescentados depois a uma solicitacao ja enviada gerem uma nova chave.
+    # Alinha a data do lote a data de coleta dos itens. Um teste com collectionDate
+    # posterior ao batch.date e aceito com HTTP 201 mas nao gravado pelo WiseLab —
+    # foi o que engoliu o acido mandelico (coleta de final de jornada, no dia seguinte).
+    # Quando a coleta e no mesmo dia da solicitacao (caso comum) nada muda aqui, nem no
+    # externalId, que continua no formato curto ja comprovado.
+    sufixo_data = ""
+    datas_coleta = {t["collectionDate"] for t in tests if t.get("collectionDate")}
+    if len(datas_coleta) == 1:
+        data_coleta = next(iter(datas_coleta))
+        if data_coleta != bdate:
+            sufixo_data = "-" + data_coleta[5:7] + data_coleta[8:10]   # -MMDD
+            print(f"[bemsoft] lote da solicitação {codsol} alinhado à data de coleta "
+                  f"{data_coleta} (solicitação é de {bdate}).")
+            bdate = data_coleta
+    elif len(datas_coleta) > 1:
+        print(f"[bemsoft] AVISO: solicitação {codsol} com {len(datas_coleta)} datas de coleta "
+              f"no mesmo lote ({sorted(datas_coleta)}); o WiseLab pode descartar as posteriores.")
+
+    # externalId: o WiseLab grava estes campos. O formato longo
+    # (sol-43335-cd27cc0df481) foi recusado com "nao foi possivel salvar os dados
+    # recebidos no lote", entao o padrao volta a ser o formato curto original.
+    # A variacao por conteudo fica apenas na Idempotency-Key (cabecalho HTTP, que o
+    # WiseLab nao persiste como coluna). BEMSOFT_EXTID_SUFFIX=1 reativa o sufixo,
+    # com tamanho ajustavel, caso o laboratorio confirme o limite do campo.
     fp = _itens_fingerprint(aceitos)
-    batch_id = f"sol-{codsol}-{fp}" if codsol is not None else f"sol-{_uuid()}"
-    order_id = f"order-{codsol}-{fp}" if codsol is not None else f"order-{_uuid()}"
+    if config.EXTID_SUFFIX:
+        sufixo = "-" + fp[:config.EXTID_HASH_LEN]
+    else:
+        sufixo = ""
+    sufixo = sufixo + sufixo_data
+    batch_id = f"sol-{codsol}{sufixo}" if codsol is not None else f"sol-{_uuid()}"
+    order_id = f"order-{codsol}{sufixo}" if codsol is not None else f"order-{_uuid()}"
 
     # Monta o order sem physician se não estiver disponível
     order_data = {
@@ -419,9 +509,13 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, pr
     headers = {
         "Authorization": f"Bearer {config.TOKEN}",
         "Content-Type": "application/json",
-        # Derivada do conjunto exato de itens aceitos: exames acrescentados depois a uma
-        # solicitacao ja enviada produzem uma chave nova, em vez de colidirem em 409.
-        "Idempotency-Key": payload["batch"]["externalId"],
+        # Sempre sensivel ao conteudo, independente do formato do externalId: exames
+        # acrescentados depois a uma solicitacao ja enviada produzem uma chave nova,
+        # em vez de colidirem em 409 e serem descartados.
+        "Idempotency-Key": _idemp_key(
+            (event.get("solicitacao") or {}).get("codsolicitacao"),
+            event.get("itens") or [],
+        ),
     }
 
     if print_payload:
@@ -451,8 +545,14 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, pr
         print(f"Body (Text): {body}")
     print(f"==========================\n")
 
-    # 201: Sucesso na criação do request
+    # 201: criado — mas só se o corpo não trouxer erro (o WiseLab devolve 201 com
+    # {"error": ...} quando falha ao gravar o lote).
     if status == 201:
+        erro_corpo = _erro_no_corpo(body)
+        if erro_corpo:
+            print(f"[bemsoft] ATENÇÃO: HTTP 201 com erro no corpo — o lote NÃO foi gravado: {erro_corpo}")
+            return {"ok": False, "status": status, "error": erro_corpo, "rejected": rejeitados,
+                    "body_error": True, "retryable": True}
         return {"ok": True, "status": status, "data": body, "rejected": rejeitados,
                 "sent_count": len(aceitos)}
 
@@ -475,8 +575,13 @@ def send_to_bemsoft(event: Dict[str, Any], session: Optional[Session] = None, pr
         return {"ok": False, "status": status, "error": body, "auth_error": True,
                 "rejected": rejeitados, "retryable": False}
 
-    # Outros status codes
+    # Outros status codes 2xx — mesma validação de corpo
     if 200 <= status < 300:
+        erro_corpo = _erro_no_corpo(body)
+        if erro_corpo:
+            print(f"[bemsoft] ATENÇÃO: HTTP {status} com erro no corpo — o lote NÃO foi gravado: {erro_corpo}")
+            return {"ok": False, "status": status, "error": erro_corpo, "rejected": rejeitados,
+                    "body_error": True, "retryable": True}
         return {"ok": True, "status": status, "data": body, "rejected": rejeitados,
                 "sent_count": len(aceitos)}
 
@@ -622,6 +727,19 @@ def retry_pending(session: Optional[Session] = None) -> int:
             ]
             logger_txt.log_rejeitados(event, rejeitados, enviados_itens, destino="Bemsoft (reenvio)")
 
+        if result.get("idempotent"):
+            # 409 durante um REENVIO e ambiguo: a chave pode ter ficado registrada na
+            # tentativa que falhou, e entao nada seria criado agora. Nao apaga da fila
+            # em silencio — manda para dead-letter para conferencia manual.
+            _on_connect_ok()
+            print(f"[bemsoft] reenvio da solicitação {cod} devolveu 409 — o WiseLab diz que "
+                  f"ja processou esta chave, mas o envio anterior falhou. NAO confirmado como criado.")
+            logger_txt.log_envio(event, "Bemsoft", event.get("itens") or [],
+                                 "REENVIO 409 - NAO CONFIRMADO",
+                                 "conferir manualmente no WiseLab")
+            _move_to_dead(fpath, "409 no reenvio - exige conferencia manual")
+            continue
+
         if result.get("ok"):
             _on_connect_ok()
             os.remove(fpath)
@@ -652,7 +770,16 @@ def retry_pending(session: Optional[Session] = None) -> int:
             _move_to_dead(fpath, f"{attempts} tentativas sem sucesso")
             continue
 
-        print(f"[bemsoft] reenvio da solicitação {cod} falhou (tentativa {attempts}); tenta no próximo ciclo.")
+        # Distingue "servico fora" de "este evento falhou". Antes qualquer falha dava
+        # break, e um unico evento que nunca vai passar bloqueava a fila inteira atras
+        # dele (foi o que segurou o HTLV atras do acido mandelico).
+        if result.get("status"):
+            print(f"[bemsoft] reenvio da solicitação {cod} falhou (tentativa {attempts}); "
+                  f"segue para o próximo da fila.")
+            continue
+
+        print(f"[bemsoft] reenvio da solicitação {cod} falhou (tentativa {attempts}); "
+              f"serviço parece fora, pausa a fila neste ciclo.")
         break
 
     if sent:
