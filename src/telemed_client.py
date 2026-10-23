@@ -82,13 +82,14 @@ def is_enabled() -> bool:
     return bool(config.TELEMED_URL and config.TELEMED_TOKEN)
 
 
-def get_filtros() -> list:
+def get_filtros() -> Optional[list]:
     """
     Busca a lista de NomeTerceirizado configurados para o Telemed.
-    Retorna lista vazia em caso de erro (worker não interrompe o ciclo).
+    Retorna None em caso de erro (worker não interrompe o ciclo) — lista vazia
+    é resposta válida: o Telelaudo sem filtros aceita todos os terceirizados.
     """
     if not is_enabled() or _circuit_open():
-        return []
+        return None
 
     url = config.TELEMED_URL + "/api/sync/filtros"
     headers = {"Authorization": f"Bearer {config.TELEMED_TOKEN}"}
@@ -99,10 +100,23 @@ def get_filtros() -> list:
             _on_connect_ok()
             return resp.json()
         print(f"[telemed] erro ao buscar filtros (HTTP {resp.status_code})")
-        return []
+        return None
     except Exception as e:
         _on_connect_error(e)
-        return []
+        return None
+
+
+def aceito_pelo_telelaudo(terceirizado: Any, filtros: list) -> bool:
+    """
+    Mesma regra de /api/sync/exames: sem filtros aceita tudo; com filtros, o
+    terceirizado é aceito se um contiver o outro (sem diferenciar maiúsculas).
+    Os nomes do TELEMED_TERCEIROS que não estão no Telelaudo são enviados e descartados lá.
+    """
+    nomes = [str(f).upper() for f in (filtros or [])]
+    if not nomes:
+        return True
+    t = str(terceirizado or "").strip().upper()
+    return any(t in f or f in t for f in nomes)
 
 
 def sync_event(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,8 +147,10 @@ def sync_event(event: Dict[str, Any]) -> Dict[str, Any]:
         if status in (200, 201):
             _on_connect_ok()
             created = body.get("created", []) if isinstance(body, dict) else []
+            updated = body.get("updated", []) if isinstance(body, dict) else []
             skipped = body.get("skipped", []) if isinstance(body, dict) else []
-            print(f"[telemed] sincronizado: {len(created)} criado(s), {len(skipped)} já existente(s).")
+            print(f"[telemed] sincronizado: {len(created)} criado(s), {len(updated)} atualizado(s), "
+                  f"{len(skipped)} já existente(s).")
             return {"ok": True, "status": status, "data": body}
 
         if status == 401:

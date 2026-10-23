@@ -64,6 +64,16 @@ BEGIN
     EnviadoEm datetime2 NOT NULL DEFAULT SYSUTCDATETIME()
   );
 END;"""),
+text("""
+IF OBJECT_ID('dbo._TelemedSnapshot','U') IS NULL
+BEGIN
+  CREATE TABLE dbo._TelemedSnapshot (
+    CodItemSol BIGINT NOT NULL PRIMARY KEY,
+    CodSolicitacao BIGINT NULL,
+    Hash VARCHAR(64) NOT NULL,
+    AtualizadoEm datetime2 NOT NULL DEFAULT SYSUTCDATETIME()
+  );
+END;"""),
 ]
 
 # Registra um item como já despachado (ou descartado de forma definitiva).
@@ -132,7 +142,53 @@ ORDER BY i.CodItemSol ASC;
 """
 
 
-def _build_fetch_query(terceiros):
+# ---------------------------------------------------------------------------
+# Ressincronizacao com o Telemed: itens ja enviados na janela de dias, com os
+# valores atuais do SysLab e a assinatura do ultimo envio aceito. O que mudou
+# (ou nunca teve assinatura) volta a ser enviado; o Telelaudo atualiza data e
+# solicitante do exame ainda nao laudado.
+# ---------------------------------------------------------------------------
+SQL_TELEMED_RESYNC_TEMPLATE = """
+SELECT
+    i.CodItemSol, i.CodSolicitacao, i.DataEntrada, i.DescExames, i.CodConvExames,
+    i.NomeTerceirizado, i.Valor, i.VlTerceirizado, i.SituacaoResultado, i.Origem,
+    i.CodTExame,
+
+    s.codpaciente, s.CodConvenio, s.dtaentrada AS Sol_dtaentrada, s.Hora, s.Valortotal, s.TipoPgto, s.Obs_Sol, s.Medico,
+
+    p.nome AS PacienteNome, p.cpf AS PacienteCPF, p.datanasc AS PacienteNascimento,
+    p.fone AS PacienteFone, p.EmailPac AS PacienteEmail, p.cidade AS PacienteCidade, p.uf AS PacienteUF,
+    p.sexo AS PacienteSexo,
+
+    te.CodigoExame AS CodigoExame,
+    te.descricao AS ExameDescricao,
+
+    ts.Hash AS SnapshotHash
+FROM dbo._MonitorSent ms
+JOIN dbo.ItemSol i ON i.CodItemSol = ms.CodItemSol
+JOIN dbo.solicitacao s ON s.codsolicitacao = i.CodSolicitacao
+LEFT JOIN dbo.paciente p ON p.codpaciente = s.codpaciente
+LEFT JOIN dbo.texame te ON te.CodTexame = i.CodTExame
+LEFT JOIN dbo._TelemedSnapshot ts ON ts.CodItemSol = i.CodItemSol
+WHERE
+    ms.Destino LIKE '%Telemed%'
+    AND ms.EnviadoEm >= DATEADD(day, -:dias, SYSUTCDATETIME())
+{terceiro_clause}
+ORDER BY i.CodSolicitacao DESC, i.CodItemSol ASC;
+"""
+
+SQL_TELEMED_SNAPSHOT_UPSERT = text("""
+MERGE dbo._TelemedSnapshot AS alvo
+USING (SELECT :item AS CodItemSol) AS origem
+   ON alvo.CodItemSol = origem.CodItemSol
+WHEN MATCHED THEN
+  UPDATE SET Hash = :hash, CodSolicitacao = :sol, AtualizadoEm = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+  INSERT (CodItemSol, CodSolicitacao, Hash) VALUES (:item, :sol, :hash);
+""")
+
+
+def _terceiro_clause(terceiros):
     clause = ""
     params = {}
     terceiros = [t for t in (terceiros or []) if t]
@@ -148,8 +204,33 @@ def _build_fetch_query(terceiros):
             clause = (
                 "    AND i.NomeTerceirizado IN (" + ", ".join(placeholders) + ")\n"
             )
+    return clause, params
+
+
+def _build_fetch_query(terceiros):
+    clause, params = _terceiro_clause(terceiros)
     sql = SQL_FETCH_TEMPLATE.format(terceiro_clause=clause)
     return text(sql), params
+
+
+def fetch_telemed_resync(conn, dias, terceiros):
+    """Itens enviados ao Telemed nos ultimos `dias`, so dos terceirizados do Telemed."""
+    clause, params = _terceiro_clause(terceiros)
+    if not clause:
+        return []
+    params["dias"] = int(dias)
+    stmt = text(SQL_TELEMED_RESYNC_TEMPLATE.format(terceiro_clause=clause))
+    return conn.execute(stmt, params).mappings().all()
+
+
+def telemed_snapshot_save(conn, registros):
+    """Grava a assinatura do ultimo envio aceito: [(CodItemSol, CodSolicitacao, hash)]."""
+    for item_id, cod_solicitacao, assinatura in registros:
+        conn.execute(SQL_TELEMED_SNAPSHOT_UPSERT, {
+            "item": int(item_id),
+            "sol": int(cod_solicitacao) if cod_solicitacao is not None else None,
+            "hash": assinatura,
+        })
 
 
 def fetch_items(conn, last, terceiros):

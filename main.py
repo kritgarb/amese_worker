@@ -216,6 +216,113 @@ def _group_fingerprint(head_row: Dict[str, Any], items: List[Dict[str, Any]]) ->
     return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
 
 
+def _telemed_hash(data_entrada: Any, terceirizado: Any, medico: Any) -> str:
+    """
+    Assinatura do que o Telelaudo atualiza num exame já sincronizado: a data do
+    item (agendamento) e o solicitante (Medico da solicitação ou terceirizado).
+    """
+    bruto = repr((
+        str(_normalize_value(data_entrada) or "")[:10],
+        str(terceirizado or "").strip(),
+        str(medico or "").strip(),
+    ))
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
+
+
+def _telemed_snapshot(head_row: Dict[str, Any], itens: List[Dict[str, Any]],
+                      result: Dict[str, Any],
+                      filtros_telelaudo: Optional[list]) -> List[Tuple[Any, Any, str]]:
+    """
+    Assinaturas dos itens aceitos pelo Telelaudo. Ficam de fora os que voltaram
+    em 'errors' e os de terceirizado fora dos filtros do Telelaudo (descartados
+    lá). Sem a lista de filtros não grava nada; a ressincronização cobre depois.
+    """
+    if filtros_telelaudo is None:
+        return []
+    body = result.get("data") if isinstance(result.get("data"), dict) else {}
+    com_erro = {str(e.get("numero_controle")) for e in (body.get("errors") or [])}
+    return [
+        (
+            i["CodItemSol"], head_row["CodSolicitacao"],
+            _telemed_hash(i.get("DataEntrada"), i.get("NomeTerceirizado"), head_row.get("Medico")),
+        )
+        for i in itens
+        if str(i["CodItemSol"]) not in com_erro
+        and telemed_client.aceito_pelo_telelaudo(i.get("NomeTerceirizado"), filtros_telelaudo)
+    ]
+
+
+def resync_telemed() -> None:
+    """
+    Reenvia ao Telemed os itens já enviados cuja data ou solicitante mudou no SysLab.
+
+    O envio normal acontece segundos após o cadastro, e a recepção costuma ajustar
+    a data do exame particular agendado depois disso. Sem esta rodada o Telelaudo
+    ficava com a data do cadastro. Itens sem assinatura (enviados antes desta
+    rotina existir) são reenviados uma vez; o Telelaudo só altera o que mudou.
+    """
+    if config.TELEMED_RESYNC_DAYS <= 0 or not telemed_client.is_enabled():
+        return
+
+    # Sem a lista do Telelaudo não dá para saber o que ele aceita: fica para a próxima rodada.
+    filtros_telelaudo = telemed_client.get_filtros()
+    if filtros_telelaudo is None:
+        return
+
+    telemed_filtros = list(dict.fromkeys(filtros_telelaudo + config.TELEMED_TERCEIROS))
+    with database.ENGINE.begin() as conn:
+        rows = database.fetch_telemed_resync(conn, config.TELEMED_RESYNC_DAYS, telemed_filtros)
+
+    groups: Dict[Any, Dict[str, Any]] = {}
+    for r in rows:
+        # Terceirizado fora dos filtros do Telelaudo: ele descarta, não há o que reenviar.
+        if not telemed_client.aceito_pelo_telelaudo(r["NomeTerceirizado"], filtros_telelaudo):
+            continue
+        if r["SnapshotHash"] == _telemed_hash(r["DataEntrada"], r["NomeTerceirizado"], r["Medico"]):
+            continue
+        g = groups.setdefault(r["CodSolicitacao"], {"head": r, "items": []})
+        g["items"].append(row_to_item(r))
+
+    if not groups:
+        return
+
+    lote = list(groups.items())[:max(1, config.TELEMED_RESYNC_LOTE)]
+    print(
+        f"[resync] {len(groups)} solicitação(ões) com itens alterados ou sem assinatura; "
+        f"reenviando {len(lote)} nesta rodada."
+    )
+
+    atualizados = 0
+    for cod, g in lote:
+        event = build_group_event(g["head"], g["items"])
+        result = telemed_client.sync_event(event)
+        if not result.get("ok"):
+            if result.get("status") is None:
+                print(f"[resync] Telemed indisponível ({result.get('error')}); retoma na próxima rodada.")
+                break
+            # Erro HTTP desta solicitação: as demais seguem, e ela volta na próxima rodada.
+            print(f"[resync] solicitação {cod} recusada (HTTP {result.get('status')}).")
+            logger_txt.log_envio(
+                event, "Telemed", g["items"], "ERRO resync", str(result.get("error"))[:300]
+            )
+            continue
+
+        updated = (result.get("data") or {}).get("updated") or []
+        if updated:
+            atualizados += len(updated)
+            logger_txt.log_envio(
+                event, "Telemed", g["items"],
+                f"ATUALIZADO {len(updated)} exame(s)", "ressincronização (data/solicitante)",
+            )
+        with database.ENGINE.begin() as conn:
+            database.telemed_snapshot_save(
+                conn, _telemed_snapshot(g["head"], g["items"], result, filtros_telelaudo)
+            )
+
+    if atualizados:
+        print(f"[resync] {atualizados} exame(s) atualizado(s) no Telelaudo.")
+
+
 def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
     """Lê last_id, busca novos itens, debounce, agrupa por solicitação e envia 1 payload por grupo."""
     poll_start = datetime.now()
@@ -227,8 +334,9 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
         telemed_client.retry_pending()
         # A lista do amese_telemed manda, mas TELEMED_TERCEIROS do .env COMPLEMENTA
         # (antes era apenas fallback: com a API no ar, o .env era ignorado).
+        filtros_telelaudo = telemed_client.get_filtros()
         telemed_filtros = list(dict.fromkeys(
-            (telemed_client.get_filtros() or []) + config.TELEMED_TERCEIROS
+            (filtros_telelaudo or []) + config.TELEMED_TERCEIROS
         ))
         all_terceiros = list(dict.fromkeys(config.TERCEIROS + telemed_filtros))
         rows = database.fetch_items(conn, last, all_terceiros)
@@ -438,6 +546,10 @@ def poll_once(sess_http: Optional[bemsoft_api.Session]) -> int:
                     logger_txt.log_envio(
                         event_t, "Telemed", itens_telemed, f"OK status={t_result.get('status')}"
                     )
+                    # Base para a ressincronização detectar mudança de data/solicitante.
+                    database.telemed_snapshot_save(
+                        conn, _telemed_snapshot(g["head"], itens_telemed, t_result, filtros_telelaudo)
+                    )
                 else:
                     logger_txt.log_envio(
                         event_t, "Telemed", itens_telemed, "ERRO", str(t_result.get("error"))[:300]
@@ -511,12 +623,25 @@ def main():
     # Sessão HTTP única (reuso/keep-alive)
     sess_http = bemsoft_api._build_session() if not config.DRY_RUN else None
 
+    if config.TELEMED_RESYNC_DAYS > 0:
+        print(
+            f"Ressincronização Telemed: janela={config.TELEMED_RESYNC_DAYS} dia(s), "
+            f"a cada {config.TELEMED_RESYNC_SECONDS}s, até {config.TELEMED_RESYNC_LOTE} solicitação(ões)/rodada"
+        )
+    proximo_resync = 0.0
+
     try:
         while True:
             try:
                 poll_once(sess_http)
             except Exception as e:
                 print(f"[ERRO] ciclo falhou: {e}")
+            if time.time() >= proximo_resync:
+                proximo_resync = time.time() + config.TELEMED_RESYNC_SECONDS
+                try:
+                    resync_telemed()
+                except Exception as e:
+                    print(f"[ERRO] ressincronização Telemed falhou: {e}")
             time.sleep(config.POLL_SECONDS)
     except KeyboardInterrupt:
         print("\nEncerrado pelo usuário.")

@@ -152,6 +152,13 @@ if _CODTEXAME_MAP_RAW:
 TELEMED_URL   = os.getenv("TELEMED_URL", "").rstrip("/")   # ex: http://localhost:3000
 TELEMED_TOKEN = os.getenv("TELEMED_TOKEN", "")             # deve coincidir com WORKER_SECRET no telemed
 TELEMED_TIMEOUT = int(os.getenv("TELEMED_TIMEOUT", "15"))
+# Ressincronizacao: a recepcao muda a data (agendamento de particular) ou o
+# terceirizado do item depois do envio. O worker rele os itens ja enviados ao
+# Telemed nesta janela e reenvia os que mudaram. 0 desliga.
+TELEMED_RESYNC_DAYS    = int(os.getenv("TELEMED_RESYNC_DAYS", "30"))
+TELEMED_RESYNC_SECONDS = int(os.getenv("TELEMED_RESYNC_SECONDS", "300"))
+# Teto de solicitacoes reenviadas por rodada (a primeira rodada reenvia toda a janela).
+TELEMED_RESYNC_LOTE    = int(os.getenv("TELEMED_RESYNC_LOTE", "100"))
 
 # =========================
 # Config Google Sheets
