@@ -111,6 +111,9 @@ DRY_RUN         = os.getenv("BEMSOFT_DRY_RUN", "0") == "1"
 # formato longo ("nao foi possivel salvar os dados recebidos no lote").
 EXTID_SUFFIX    = os.getenv("BEMSOFT_EXTID_SUFFIX", "0") == "1"
 EXTID_HASH_LEN  = int(os.getenv("BEMSOFT_EXTID_HASH_LEN", "6"))
+# Sufixo -MMDD no externalId quando o lote vai com a data de coleta. Desligado:
+# o WiseLab recusa externalIds com sufixo.
+EXTID_DATE_SUFFIX = os.getenv("BEMSOFT_EXTID_DATE_SUFFIX", "0") == "1"
 # Um lote por data de coleta. O WiseLab descarta em silencio o teste cuja
 # collectionDate e posterior a data do lote (urina de final de jornada, fezes
 # entregues dias depois). Com isto cada lote leva a propria data de coleta.

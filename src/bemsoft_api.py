@@ -416,7 +416,11 @@ def build_payload(event: Dict[str, Any], session: Optional[Session] = None) -> T
     if len(datas_coleta) == 1:
         data_coleta = next(iter(datas_coleta))
         if data_coleta != bdate:
-            sufixo_data = "-" + data_coleta[5:7] + data_coleta[8:10]   # -MMDD
+            # O sufixo -MMDD no externalId fazia o WiseLab recusar 100% dos lotes
+            # ("Nao foi possivel salvar os dados recebidos no lote sol-X-MMDD").
+            # O mesmo externalId sol-X e aceito em reenvios, entao fica so a data.
+            if config.EXTID_DATE_SUFFIX:
+                sufixo_data = "-" + data_coleta[5:7] + data_coleta[8:10]   # -MMDD
             print(f"[bemsoft] lote da solicitação {codsol} alinhado à data de coleta "
                   f"{data_coleta} (solicitação é de {bdate}).")
             bdate = data_coleta
